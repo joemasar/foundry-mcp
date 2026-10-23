@@ -27,7 +27,7 @@ test("tools work end to end through a fake Foundry client", async (t) => {
 
   const { tools } = await client.listTools();
   const names = tools.map((x) => x.name);
-  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session", "award_xp", "give_treasure", "find_audio", "audio_control", "create_playlist", "preview_scene"]) {
+  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session", "award_xp", "give_treasure", "find_audio", "audio_control", "create_playlist", "preview_scene", "create_map_scene"]) {
     assert.ok(names.includes(n), `missing tool ${n}`);
   }
 
@@ -138,6 +138,26 @@ test("tools work end to end through a fake Foundry client", async (t) => {
   assert.equal(given.params.recipient, "party");
   assert.deepEqual(given.params.items, items);
   assert.equal(given.params.coins.gp, 30);
+
+  // Map art: the scene is sized from the image bytes, and rooms become walls without floors.
+  const art = Buffer.alloc(33);
+  art.writeUInt32BE(0x89504e47, 0);
+  art.writeUInt32BE(1792, 16);
+  art.writeUInt32BE(1024, 20);
+  const before = seen.length;
+  const mapScene = await client.callTool({
+    name: "create_map_scene",
+    arguments: { name: "Ruined Keep", base64: art.toString("base64"), columns: 28, rooms: [{ x: 1, y: 1, w: 5, h: 4 }] },
+  });
+  assert.equal(mapScene.isError, undefined, textOf(mapScene));
+  const mapCalls = seen.slice(before);
+  assert.deepEqual(mapCalls.map((m) => m.action), ["asset.upload", "scene.create", "scene.buildLayout"]);
+  assert.equal(mapCalls[0].params.fileName, "Ruined Keep.png", "the extension comes from the bytes");
+  assert.equal(mapCalls[1].params.width, 2800);
+  assert.equal(mapCalls[1].params.height, 1600);
+  assert.equal(mapCalls[2].params.floors, false);
+  const tooBig = await client.callTool({ name: "create_map_scene", arguments: { name: "x", base64: art.toString("base64"), columns: 4, rooms: [{ x: 0, y: 0, w: 9, h: 2 }] } });
+  assert.equal(tooBig.isError, true);
 
   // Bad input is caught by the schema before reaching Foundry.
   const invalid = await client.callTool({ name: "delete_document", arguments: { uuid: "Actor.x", confirm: false } });

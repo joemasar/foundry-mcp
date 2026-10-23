@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { FoundryBridge } from "./bridge.js";
 import { buildLayout } from "./mapLayout.js";
+import { fitGrid, imageDimensions, sniffImageType } from "./mapArt.js";
 import { DIFFICULTIES, budgetFor, evaluateEncounter, pickEncounter, seededRandom, type Difficulty } from "./encounter.js";
 import {
   ACCOMPLISHMENT_XP,
@@ -371,32 +372,46 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     },
     async ({ localPath, url, fileName, subfolder }) => {
       try {
-        let data: Buffer;
-        let name = fileName;
-        if (localPath) {
-          data = await readFile(localPath);
-          name ??= basename(localPath);
-        } else if (url) {
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
-          data = Buffer.from(await res.arrayBuffer());
-          name ??= basename(new URL(url).pathname) || "download";
-        } else {
-          throw new Error("Give either localPath or url.");
-        }
-        if (data.length > 50 * 1024 * 1024) throw new Error("File is larger than 50 MB.");
-        const ext = extname(name).toLowerCase();
-        const mime = MIME[ext];
-        if (!mime) throw new Error(`Unsupported file type '${ext}'. Use one of: ${Object.keys(MIME).join(", ")}`);
-        const safeName = name.replace(/[^\w.\- ]+/g, "_");
-        return await bridge
-          .request("asset.upload", { fileName: safeName, subfolder, mime, base64: data.toString("base64") }, 180_000)
-          .then(text);
+        const { path } = await uploadFile({ localPath, url, fileName, subfolder });
+        return text({ path });
       } catch (err) {
         return fail(err);
       }
     },
   );
+
+  // Reads a local file, a download or base64 bytes, and uploads it to Foundry. Returns the Foundry
+  // path and the bytes (so callers can read an image's size).
+  async function uploadFile(src: { localPath?: string; url?: string; base64?: string; fileName?: string; subfolder: string }) {
+    let data: Buffer;
+    let name = src.fileName;
+    if (src.localPath) {
+      data = await readFile(src.localPath);
+      name ??= basename(src.localPath);
+    } else if (src.url) {
+      const res = await fetch(src.url);
+      if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+      data = Buffer.from(await res.arrayBuffer());
+      name ??= basename(new URL(src.url).pathname) || "download";
+    } else if (src.base64) {
+      data = Buffer.from(src.base64.replace(/^data:[^,]*,/, ""), "base64");
+      name ??= "image";
+    } else {
+      throw new Error("Give localPath, url or base64.");
+    }
+    if (data.length > 50 * 1024 * 1024) throw new Error("File is larger than 50 MB.");
+    // Generated images often come without a usable extension; tell from the bytes.
+    if (!MIME[extname(name).toLowerCase()]) {
+      const sniffed = sniffImageType(data);
+      if (sniffed) name = `${name.replace(/\.[^.]*$/, "")}${sniffed}`;
+    }
+    const ext = extname(name).toLowerCase();
+    const mime = MIME[ext];
+    if (!mime) throw new Error(`Unsupported file type '${ext}'. Use one of: ${Object.keys(MIME).join(", ")}`);
+    const safeName = name.replace(/[^\w.\- ]+/g, "_");
+    const r = await bridge.request<{ path: string }>("asset.upload", { fileName: safeName, subfolder: src.subfolder, mime, base64: data.toString("base64") }, 180_000);
+    return { path: r.path, data };
+  }
 
   server.registerTool(
     "create_scene",
@@ -465,6 +480,102 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
       try {
         const layout = buildLayout(args.rooms, args.doors);
         return await bridge.request("scene.buildLayout", { ...args, layout }, 120_000).then(text);
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "create_map_scene",
+    {
+      title: "Turn map art into a scene",
+      description:
+        "Make a battle map scene from an image, such as one made with the Claude app's image tools: uploads it (from a local file, a URL or base64), sizes the scene so the art fits the grid you want, and can add walls and doors by tracing rooms on that grid (rectangles in squares from 0 at the top-left, as in build_map_layout; floors aren't drawn over the art). Give columns or rows (squares across or down), or pixelsPerSquare if the art has its own grid. Check the result with preview_scene, then add_walls for anything irregular.",
+      inputSchema: {
+        name: z.string(),
+        localPath: z.string().optional().describe("Absolute path to the image on this computer."),
+        url: z.string().url().optional().describe("Web URL of the image."),
+        base64: z.string().optional().describe("Image bytes as base64 (a data: URL is fine)."),
+        foundryPath: z.string().optional().describe("An image already in Foundry, e.g. from upload_asset."),
+        fileName: z.string().optional().describe("Name to save the upload as."),
+        columns: z.number().positive().optional().describe("Squares across the image."),
+        rows: z.number().positive().optional().describe("Squares down the image."),
+        pixelsPerSquare: z.number().positive().optional().describe("The art's own grid size in image pixels, if it has one."),
+        gridSize: z.number().int().min(50).default(100).describe("Scene pixels per square."),
+        gridDistance: z.number().default(5).describe("Feet per square."),
+        rooms: z
+          .array(
+            z.object({
+              x: z.number().int().min(0),
+              y: z.number().int().min(0),
+              w: z.number().int().min(1),
+              h: z.number().int().min(1),
+              lit: z.boolean().optional().describe("Put a light in the middle of the room."),
+            }),
+          )
+          .optional()
+          .describe("Rooms to wall in, in squares."),
+        doors: z
+          .array(
+            z.object({
+              x: z.number().int(),
+              y: z.number().int(),
+              side: z.enum(["n", "s", "e", "w"]),
+              type: z.enum(["door", "secret", "opening"]).default("door"),
+            }),
+          )
+          .default([]),
+        darkness: z.number().min(0).max(1).default(0),
+        folder: folderRef,
+        activate: z.boolean().default(false).describe("Make it the active scene for players."),
+        view: z.boolean().default(true).describe("Switch the GM's view to it."),
+      },
+    },
+    async (args) => {
+      try {
+        let background = args.foundryPath;
+        let size: { width: number; height: number } | null = null;
+        if (!background) {
+          const up = await uploadFile({ localPath: args.localPath, url: args.url, base64: args.base64, fileName: args.fileName ?? args.name, subfolder: "maps" });
+          background = up.path;
+          size = imageDimensions(up.data);
+        }
+        if (!size) size = await bridge.request<{ width: number; height: number } | null>("asset.imageSize", { path: background });
+        if (!size) throw new Error(`Couldn't read the size of "${background}". Is it a PNG, JPEG, GIF or WebP image?`);
+
+        const fit = fitGrid(size.width, size.height, { columns: args.columns, rows: args.rows, pixelsPerSquare: args.pixelsPerSquare, gridSize: args.gridSize });
+        const layout = args.rooms?.length ? buildLayout(args.rooms, args.doors) : null;
+        const outside = (args.rooms ?? []).filter((r) => r.x + r.w > Math.ceil(fit.columns) || r.y + r.h > Math.ceil(fit.rows));
+        if (outside.length) {
+          throw new Error(`Some rooms go past the map's ${fit.columns} x ${fit.rows} squares (${fit.how}). Nothing was created; the image is uploaded at ${background}.`);
+        }
+        const scene = await bridge.request<{ uuid: string; name: string }>("scene.create", {
+          name: args.name,
+          background,
+          width: fit.width,
+          height: fit.height,
+          gridSize: fit.gridSize,
+          gridDistance: args.gridDistance,
+          darkness: args.darkness,
+          folder: args.folder,
+          activate: args.activate,
+          view: args.view,
+        });
+
+        let walls;
+        if (layout) {
+          walls = await bridge.request("scene.buildLayout", { sceneUuid: scene.uuid, name: args.name, layout, floors: false, view: false }, 120_000);
+        }
+        return text({
+          sceneUuid: scene.uuid,
+          name: scene.name,
+          background,
+          image: size,
+          grid: fit,
+          walls,
+          next: "Look at it with preview_scene to check the grid and walls line up with the art.",
+        });
       } catch (err) {
         return fail(err);
       }

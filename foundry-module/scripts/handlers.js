@@ -1032,6 +1032,11 @@ export const handlers = {
     return { path: res?.path ?? `${dir}/${fileName}` };
   },
 
+  async "asset.imageSize"({ path }) {
+    const size = await imageSize(path);
+    return size ? { width: size.w, height: size.h } : null;
+  },
+
   async "scene.create"(p) {
     let width = p.width;
     let height = p.height;
@@ -1091,7 +1096,8 @@ export const handlers = {
     }
 
     const c = converter(scene, "grid");
-    const drawings = layout.drawings.map((r) => ({
+    // floors: false leaves map art uncovered (walls, doors and lights only).
+    const drawings = (p.floors === false ? [] : layout.drawings).map((r) => ({
       author: game.user.id,
       x: c.x(r.x),
       y: c.y(r.y),
@@ -1121,7 +1127,7 @@ export const handlers = {
     if (walls.length) await embedTagged(scene, "Wall", walls);
     if (lights.length) await embedTagged(scene, "AmbientLight", lights);
     if (p.activate) await scene.activate();
-    else await scene.view();
+    else if (p.view ?? true) await scene.view();
 
     return {
       sceneUuid: scene.uuid,
