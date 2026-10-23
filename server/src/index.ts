@@ -29,7 +29,7 @@ const bridge = new FoundryBridge(HOST, PORT, token);
 bridge.start();
 
 const server = new McpServer(
-  { name: "foundry-vtt", version: "0.2.0" },
+  { name: "foundry-vtt", version: "0.3.0" },
   {
     instructions: [
       "You are helping a Game Master run a Foundry VTT game, usually Pathfinder 2e, live at the table. Be quick and practical.",
@@ -39,6 +39,7 @@ const server = new McpServer(
       "Put new content in folders (e.g. the current session or story arc) so the GM can find it. Link related documents in journals with @UUID[...]{label}.",
       "Tokens placed for ambushes should be hidden. Don't activate scenes, show journals to players, or post public chat unless the GM asked for it.",
       "Never delete anything the GM did not ask you to delete.",
+      "Everything you create is tagged with the current session. When the GM asks what you made or to clear it away, use session_log and cleanup_session (preview first, confirm only after they agree). If they say this is a test, call start_session with a name like 'test' first.",
     ].join("\n"),
   },
 );

@@ -20,10 +20,16 @@ What the Foundry MCP server can do today, and what's planned next. Built for a P
 - **Encounters:** rate a fight with the PF2e XP rules using the Party's level and size; build a themed fight that fits a difficulty, imports it, places it hidden in an area without overlapping tokens, and writes a GM journal (with a dry-run preview)
 - **Chat log:** recent messages and rolls, with check type, DC, target and outcome
 
+### v0.3: session log (Tier 2, item 6; not released yet)
+- Everything Claude creates is tagged with the current session: documents, folders, combats, and tokens, walls, lights, pins, journal pages and items it adds to things the GM made
+- `start_session` names a session ("Session 12", "test"); otherwise one named after the date and time starts on its own and lasts 12 hours. The session is stored in the world, so it carries across chats
+- `session_log` lists what a session made, or every session with counts
+- `cleanup_session` previews, then deletes on confirm. It keeps the active scene, folders that still hold other things, and items on player characters unless asked
+- `list_documents` returns folder IDs and can list folders
+
 ## Next: Tier 2, story and rewards
 
 5. **Rewards.** Award XP to the party and hand out treasure that fits the party's level, using PF2e's treasure-by-level rules.
-6. **Session log and cleanup.** Tag everything Claude creates, so "list what we made tonight" or "delete the test stuff" is one command. Today's cleanup needed several manual lookups to find folder IDs.
 7. **Music and ambience.** Play, stop or switch playlists ("tavern music", "battle drums").
 
 ## Later: Tier 3, maps
@@ -34,9 +40,9 @@ What the Foundry MCP server can do today, and what's planned next. Built for a P
 
 ## Housekeeping
 
-- **Unreleased fix:** reveal, hide and rename list every token they touched, even ones that didn't change. It's on GitHub but not in a release yet; ship it with the next module release.
+- **Unreleased:** the session log (v0.3) and the fix that makes reveal, hide and rename list every token they touched. Ship both as module v0.3.0. Things made before then aren't tagged, so cleanup can't find them.
+- **Live check after release:** start a 'test' session, import a creature, place a token on an existing scene, then `session_log` and `cleanup_session` (preview, then confirm).
 - **Production install:** not done yet. Use the same manifest URL as dev, enable the module in the world, and paste the token.
-- **Folder IDs:** `list_documents` should return folder IDs, so folders can be deleted without reading full documents.
 - **Tool list refresh:** after changing the server code, reconnect foundry-vtt in `/mcp` or start a new chat. A running chat keeps the tool list it started with.
 - **Live testing:** `server/scripts/run-steps.mjs <steps.json>` drives the server against a real world without needing the chat's tool list.
 

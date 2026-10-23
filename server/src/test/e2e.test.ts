@@ -27,7 +27,7 @@ test("tools work end to end through a fake Foundry client", async (t) => {
 
   const { tools } = await client.listTools();
   const names = tools.map((x) => x.name);
-  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal"]) {
+  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session"]) {
     assert.ok(names.includes(n), `missing tool ${n}`);
   }
 
@@ -110,6 +110,16 @@ test("tools work end to end through a fake Foundry client", async (t) => {
   assert.equal(map.action, "scene.buildLayout");
   assert.ok(map.params.layout.walls.some((w: any) => w.door === 1));
   assert.equal(map.params.layout.drawings.length, 2);
+
+  // Session tools: listing defaults to the current session, cleanup previews unless confirmed.
+  const log = JSON.parse(textOf(await client.callTool({ name: "session_log", arguments: {} })));
+  assert.equal(log.action, "session.list");
+  assert.equal(log.params.session, "current");
+  const preview = JSON.parse(textOf(await client.callTool({ name: "cleanup_session", arguments: { session: "test" } })));
+  assert.equal(preview.action, "session.cleanup");
+  assert.equal(preview.params.confirm, false);
+  const noSession = await client.callTool({ name: "cleanup_session", arguments: {} });
+  assert.equal(noSession.isError, true, "cleanup needs a session");
 
   // Bad input is caught by the schema before reaching Foundry.
   const invalid = await client.callTool({ name: "delete_document", arguments: { uuid: "Actor.x", confirm: false } });

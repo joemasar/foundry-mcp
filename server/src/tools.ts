@@ -35,7 +35,7 @@ const MIME: Record<string, string> = {
 };
 
 // Shared schema pieces
-const DOC_TYPES = ["Actor", "Item", "JournalEntry", "Scene", "RollTable", "Macro", "Playlist", "Cards", "Adventure"] as const;
+const DOC_TYPES = ["Actor", "Item", "JournalEntry", "Scene", "RollTable", "Macro", "Playlist", "Cards", "Adventure", "Folder"] as const;
 const sceneRef = z
   .string()
   .optional()
@@ -96,7 +96,8 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     "list_documents",
     {
       title: "List world documents",
-      description: "List documents in the world (not compendiums), e.g. all NPCs, all journals in a folder, or scenes matching a name.",
+      description:
+        "List documents in the world (not compendiums), e.g. all NPCs, all journals in a folder, or scenes matching a name. Each result has its folder name and folderId. Use documentType 'Folder' to list folders themselves (with what they hold) and get their UUIDs.",
       inputSchema: {
         documentType: z.enum(DOC_TYPES),
         search: z.string().optional().describe("Case-insensitive name filter."),
@@ -628,7 +629,8 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     "delete_document",
     {
       title: "Delete a document",
-      description: "Delete a world document (actor, item, journal, scene, token, etc.). This cannot be undone. Always ask the GM before deleting anything you did not just create.",
+      description:
+        "Delete a world document (actor, item, journal, scene, token, folder, etc.). This cannot be undone. Always ask the GM before deleting anything you did not just create. A deleted folder's contents move up to its parent. To remove everything from a session, use cleanup_session.",
       inputSchema: {
         uuid: z.string(),
         confirm: z.literal(true).describe("Must be true."),
@@ -933,6 +935,56 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
         return fail(err);
       }
     },
+  );
+
+  // ---------- Session log ----------
+
+  const sessionRef = z
+    .string()
+    .describe("'current', a session name (e.g. 'Session 12' or 'test'; every session with that name matches), or a session ID from session_log.");
+
+  server.registerTool(
+    "start_session",
+    {
+      title: "Start a session",
+      description:
+        "Start a new named session. Everything Claude creates from now on is tagged with it, so it can be listed or cleaned up later. Use a game night ('Session 12') or a scratch name ('test'). Without this, a session named after the date and time starts on its own and lasts 12 hours.",
+      inputSchema: {
+        name: z.string().min(1),
+      },
+    },
+    (args) => call("session.start", args),
+  );
+
+  server.registerTool(
+    "session_log",
+    {
+      title: "What Claude made",
+      description:
+        "List what Claude created in a session: actors, items, journals, scenes, tables, folders, combats, plus tokens, walls, lights and pins it added to existing scenes, and items it gave to characters. Use session 'all' for an overview of every session with counts.",
+      inputSchema: {
+        session: z.union([z.literal("all"), sessionRef]).default("current"),
+        limit: z.number().int().min(1).max(500).default(200),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => call("session.list", args),
+  );
+
+  server.registerTool(
+    "cleanup_session",
+    {
+      title: "Clean up a session",
+      description:
+        "Delete everything Claude created in a session. Without confirm it only previews: show the GM the list and get a yes before calling again with confirm: true. Keeps the active scene, folders that still hold other things, and items on player characters (unless includeCharacterItems). Uploaded files and chat messages stay.",
+      inputSchema: {
+        session: z.union([z.literal("all"), sessionRef]),
+        confirm: z.boolean().default(false).describe("false previews; true deletes. Only true after the GM agreed to the preview."),
+        includeCharacterItems: z.boolean().default(false).describe("Also take back items Claude gave to player characters."),
+      },
+      annotations: { destructiveHint: true },
+    },
+    (args) => call("session.cleanup", args, 120_000),
   );
 
   server.registerTool(

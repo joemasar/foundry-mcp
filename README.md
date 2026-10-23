@@ -90,9 +90,12 @@ Ask Claude things like:
 | Tokens | `move_tokens`, `set_token_state` (reveal, hide, rename, remove), `damage_or_heal`, `set_conditions` |
 | Combat | `combat_status`, `combat_control` (turns, rounds, add, remove, defeated, initiative, end) |
 | Table | `read_chat`, `roll`, `send_chat` |
+| Session log | `start_session`, `session_log` (what Claude made), `cleanup_session` (preview, then delete) |
 | Escape hatch | `run_script` (off by default) |
 
 Grid positions are squares counted from the top-left of the map, starting at 0.
+
+Everything Claude creates is tagged with a session, so you can ask "what did we make tonight?" or "delete the test stuff". Name one with "start a session called Session 12"; otherwise a session named after the date and time starts on its own and lasts 12 hours. Cleanup always shows a preview first. Uploaded files and chat messages aren't removed.
 
 ## Configuration
 
@@ -113,5 +116,6 @@ npm test   # builds, then runs map-layout unit tests and an end-to-end test with
 - `server/src/bridge.ts`: WebSocket bridge.
 - `server/src/mapLayout.ts`: rooms to walls and doors.
 - `foundry-module/scripts/handlers.js`: what each action does inside Foundry.
+- `foundry-module/scripts/sessions.js`: session tags and cleanup planning (no Foundry globals, tested from `server`).
 
 To add a tool, register it in `tools.ts` and add a handler with the same action name in `handlers.js`. After changing the module, reload the Foundry tab.

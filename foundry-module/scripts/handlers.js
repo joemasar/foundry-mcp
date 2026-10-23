@@ -1,8 +1,46 @@
 // Every action the MCP server can ask for. Each handler gets the tool's parameters and returns
 // plain JSON. Throwing an Error sends its message back to Claude.
 
+import { COUNTED_TYPES, EMBEDDED, TOP_TYPES, describePlan, isExpired, makeTag, matchesSession, newSession, planCleanup, summarizeSessions, tagOf } from "./sessions.js";
+
 const MODULE_ID = "foundry-mcp";
 const PHYSICAL_TYPES = new Set(["equipment", "weapon", "armor", "shield", "consumable", "treasure", "backpack"]);
+
+// ---------- session tagging ----------
+
+let session = null;
+
+// Called before every request: picks up the world's current session, or starts a new one if there
+// is none or it's more than 12 hours old.
+export async function ensureSession() {
+  const saved = game.settings.get(MODULE_ID, "session");
+  if (!isExpired(saved, Date.now())) {
+    session = saved;
+    return session;
+  }
+  session = newSession(null, Date.now(), () => foundry.utils.randomID());
+  await game.settings.set(MODULE_ID, "session", session);
+  return session;
+}
+
+// Give new document data its own ID and a tag naming the current session. Create it with
+// { keepId: true } so the ID in the tag matches the document.
+function stamp(data) {
+  if (!session) throw new Error("No session yet; ensureSession() must run first.");
+  data._id ??= foundry.utils.randomID();
+  foundry.utils.setProperty(data, `flags.${MODULE_ID}`, makeTag(session, data._id, Date.now()));
+  return data;
+}
+
+const KEEP_ID = { keepId: true };
+
+function createTagged(cls, data) {
+  return cls.create(stamp(data), KEEP_ID);
+}
+
+function embedTagged(parent, type, list) {
+  return parent.createEmbeddedDocuments(type, list.map(stamp), KEEP_ID);
+}
 
 // ---------- helpers ----------
 
@@ -41,7 +79,7 @@ async function getFolderId(nameOrId, type) {
   if (byId) return byId.id;
   const byName = game.folders.find((f) => f.type === type && f.name.toLowerCase() === nameOrId.toLowerCase());
   if (byName) return byName.id;
-  const created = await Folder.implementation.create({ name: nameOrId, type });
+  const created = await createTagged(Folder.implementation, { name: nameOrId, type });
   return created.id;
 }
 
@@ -398,6 +436,67 @@ function summarize(doc) {
   }
 }
 
+// ---------- session log helpers ----------
+
+function sessionInfo(s) {
+  return { id: s.id, name: s.name, started: new Date(s.started).toLocaleString() };
+}
+
+function formatSession(s) {
+  return {
+    id: s.id,
+    name: s.name,
+    current: s.current,
+    from: new Date(s.first).toLocaleString(),
+    to: new Date(s.last).toLocaleString(),
+    counts: s.counts,
+  };
+}
+
+function folderDepth(folder) {
+  let depth = 0;
+  for (let p = folder.folder; p && depth < 20; p = p.folder) depth++;
+  return depth;
+}
+
+function isCharacter(actor) {
+  return actor.type === "character" || !!actor.hasPlayerOwner;
+}
+
+// Every tagged document in the world whose tag passes the filter, including tagged tokens, walls,
+// items and pages inside documents Claude didn't make.
+function scanTagged(filter) {
+  const out = [];
+  const add = (doc, extra) => {
+    const tag = tagOf(doc, MODULE_ID);
+    if (tag && filter(tag)) out.push({ doc, uuid: doc.uuid, type: doc.documentName, name: doc.name || doc.text || doc.documentName, tag, ...extra });
+  };
+  for (const type of TOP_TYPES) {
+    const collection = game.collections.get(type);
+    if (!collection) continue;
+    for (const doc of collection) {
+      add(doc, { active: type === "Scene" ? doc.active : undefined, depth: type === "Folder" ? folderDepth(doc) : undefined });
+      for (const field of Object.keys(EMBEDDED[type] ?? {})) {
+        for (const child of doc[field] ?? []) {
+          add(child, { parentUuid: doc.uuid, parentName: doc.name, parentIsCharacter: type === "Actor" && isCharacter(doc) });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function brief(e) {
+  return {
+    type: e.type,
+    name: e.name,
+    uuid: e.uuid,
+    on: e.parentName,
+    session: e.tag.sessionName,
+    created: new Date(e.tag.createdAt).toLocaleString(),
+  };
+}
+
 // ---------- handlers ----------
 
 export const handlers = {
@@ -424,6 +523,7 @@ export const handlers = {
         ? (({ round, turn, combatant, combatants, scene: cs }) => ({ round, turn, current: combatant?.name, combatants: combatants.size, scene: cs?.name }))(findCombat())
         : null,
       scriptsAllowed: game.settings.get(MODULE_ID, "allowScripts"),
+      session: session ? sessionInfo(session) : null,
     };
   },
 
@@ -444,6 +544,8 @@ export const handlers = {
         type: d.type,
         level: d.system?.details?.level?.value ?? d.system?.level?.value,
         folder: d.folder?.name,
+        folderId: d.folder?.id,
+        holds: documentType === "Folder" ? d.type : undefined,
         active: documentType === "Scene" ? d.active : undefined,
       })),
     };
@@ -513,7 +615,11 @@ export const handlers = {
     if (name && src.documentName === "Actor") foundry.utils.setProperty(data, "prototypeToken.name", name);
     const folderId = await getFolderId(folder, src.documentName);
     if (folderId) data.folder = folderId;
-    const docs = await docClass(src.documentName).createDocuments(Array.from({ length: count }, () => foundry.utils.deepClone(data)));
+    delete data._id;
+    const docs = await docClass(src.documentName).createDocuments(
+      Array.from({ length: count }, () => stamp(foundry.utils.deepClone(data))),
+      KEEP_ID,
+    );
     return { created: docs.map((d) => ({ uuid: d.uuid, name: d.name })), summary: summarize(docs[0]) };
   },
 
@@ -565,7 +671,7 @@ export const handlers = {
       actorData.img = p.img;
       actorData.prototypeToken = { texture: { src: p.img } };
     }
-    const actor = await Actor.implementation.create(actorData);
+    const actor = await createTagged(Actor.implementation, actorData);
 
     const items = [...loreItems];
     for (const s of p.strikes ?? []) {
@@ -675,11 +781,11 @@ export const handlers = {
 
     if (p.actorUuid) {
       const actor = await getActor(p.actorUuid);
-      const [item] = await actor.createEmbeddedDocuments("Item", [data]);
+      const [item] = await embedTagged(actor, "Item", [data]);
       return { uuid: item.uuid, givenTo: actor.name, summary: summarizeItem(item) };
     }
     data.folder = await getFolderId(p.folder, "Item");
-    const item = await Item.implementation.create(data);
+    const item = await createTagged(Item.implementation, data);
     return { uuid: item.uuid, summary: summarizeItem(item) };
   },
 
@@ -698,7 +804,7 @@ export const handlers = {
       if (quantity && data.system && "quantity" in data.system) data.system.quantity = quantity;
       items.push(data);
     }
-    const created = items.length ? await actor.createEmbeddedDocuments("Item", items) : [];
+    const created = items.length ? await embedTagged(actor, "Item", items) : [];
     return { actor: actor.name, added: created.map((i) => i.name), notFound: missing.length ? missing : undefined };
   },
 
@@ -714,7 +820,7 @@ export const handlers = {
       })),
     };
     if (showToPlayers) data.ownership = { default: CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER };
-    const entry = await JournalEntry.implementation.create(data);
+    const entry = await createTagged(JournalEntry.implementation, data);
     if (popOut) entry.sheet.render(true);
     return { uuid: entry.uuid, pages: entry.pages.map((pg) => ({ uuid: pg.uuid, title: pg.name })) };
   },
@@ -728,7 +834,7 @@ export const handlers = {
       return { uuid: existing.uuid, replaced: true };
     }
     const maxSort = Math.max(0, ...entry.pages.map((pg) => pg.sort));
-    const [page] = await entry.createEmbeddedDocuments("JournalEntryPage", [
+    const [page] = await embedTagged(entry, "JournalEntryPage", [
       { name: title, type: "text", sort: maxSort + 100000, text: { content, format: CONST.JOURNAL_ENTRY_PAGE_FORMATS.HTML } },
     ]);
     return { uuid: page.uuid, added: true };
@@ -754,7 +860,7 @@ export const handlers = {
       low += weight;
       return row;
     });
-    const table = await RollTable.implementation.create({
+    const table = await createTagged(RollTable.implementation, {
       name,
       description: description ?? "",
       formula: formula ?? `1d${low - 1}`,
@@ -810,7 +916,7 @@ export const handlers = {
     };
     if (p.background) data.background = { src: p.background };
     if (p.backgroundColor) data.backgroundColor = p.backgroundColor;
-    const scene = await Scene.implementation.create(data);
+    const scene = await createTagged(Scene.implementation, data);
     await setBackground(scene, p.background);
     if (p.activate) await scene.activate();
     else if (p.view ?? true) await scene.view();
@@ -830,7 +936,7 @@ export const handlers = {
         }
       }
     } else {
-      scene = await Scene.implementation.create({
+      scene = await createTagged(Scene.implementation, {
         name: p.name,
         width: (layout.width + 1) * gridSize,
         height: (layout.height + 1) * gridSize,
@@ -870,9 +976,9 @@ export const handlers = {
       config: { bright: 15, dim: 30, color: "#ffcc88", alpha: 0.4, animation: { type: "torch", speed: 3, intensity: 3 } },
     }));
 
-    if (drawings.length) await scene.createEmbeddedDocuments("Drawing", drawings);
-    if (walls.length) await scene.createEmbeddedDocuments("Wall", walls);
-    if (lights.length) await scene.createEmbeddedDocuments("AmbientLight", lights);
+    if (drawings.length) await embedTagged(scene, "Drawing", drawings);
+    if (walls.length) await embedTagged(scene, "Wall", walls);
+    if (lights.length) await embedTagged(scene, "AmbientLight", lights);
     if (p.activate) await scene.activate();
     else await scene.view();
 
@@ -898,14 +1004,15 @@ export const handlers = {
         data.push({ c: [c.x(pts[i]), c.y(pts[i + 1]), c.x(pts[i + 2]), c.y(pts[i + 3])], ...wallData(w.type) });
       }
     }
-    const created = await scene.createEmbeddedDocuments("Wall", data);
+    const created = await embedTagged(scene, "Wall", data);
     return { scene: scene.name, wallsCreated: created.length };
   },
 
   async "scene.addLights"({ sceneUuid, units, lights }) {
     const scene = await resolveScene(sceneUuid);
     const c = converter(scene, units);
-    const created = await scene.createEmbeddedDocuments(
+    const created = await embedTagged(
+      scene,
       "AmbientLight",
       lights.map((l) => ({
         x: c.x(l.x),
@@ -972,7 +1079,7 @@ export const handlers = {
       obj.name = total > 1 ? `${base} ${i + 1}` : base;
       tokens.push(obj);
     }
-    const created = await scene.createEmbeddedDocuments("Token", tokens);
+    const created = await embedTagged(scene, "Token", tokens);
     return { scene: scene.name, tokens: created.map((t) => ({ id: t.id, uuid: t.uuid, name: t.name, ...toGrid(scene, t.x, t.y), hidden: t.hidden })) };
   },
 
@@ -993,7 +1100,7 @@ export const handlers = {
         texture: { src: "icons/svg/book.svg" },
       });
     }
-    const created = await scene.createEmbeddedDocuments("Note", data);
+    const created = await embedTagged(scene, "Note", data);
     return { scene: scene.name, notesCreated: created.length };
   },
 
@@ -1013,7 +1120,7 @@ export const handlers = {
     let tokens = scene.tokens.contents.filter((t) => t.actor);
     if (tokenIds?.length) tokens = tokens.filter((t) => tokenIds.includes(t.id));
     if (!tokens.length) throw new Error("No tokens to add to the encounter.");
-    const combat = await Combat.implementation.create({ scene: scene.id, active: true });
+    const combat = await createTagged(Combat.implementation, { scene: scene.id, active: true });
     await combat.createEmbeddedDocuments(
       "Combatant",
       tokens.map((t) => ({ tokenId: t.id, sceneId: scene.id, actorId: t.actorId, hidden: t.hidden })),
@@ -1075,7 +1182,7 @@ export const handlers = {
   },
 
   async "folder.create"({ name, documentType, parent, color }) {
-    const folder = await Folder.implementation.create({
+    const folder = await createTagged(Folder.implementation, {
       name,
       type: documentType,
       folder: parent ? await getFolderId(parent, documentType) : null,
@@ -1291,6 +1398,117 @@ export const handlers = {
       }))
       .filter((c) => typeof c.level === "number");
     return { scene: scene.name, creatures };
+  },
+
+  // ---------- session log ----------
+
+  async "session.start"({ name }) {
+    const previous = session;
+    session = newSession(name, Date.now(), () => foundry.utils.randomID());
+    await game.settings.set(MODULE_ID, "session", session);
+    return { started: sessionInfo(session), previous: previous ? sessionInfo(previous) : null };
+  },
+
+  async "session.list"({ session: ref = "current", limit = 200 }) {
+    const entries = scanTagged((tag) => matchesSession(tag, ref, session.id));
+    const sessions = summarizeSessions(entries, session.id).map(formatSession);
+    if (ref === "all") return { current: sessionInfo(session), sessions };
+    const named = entries.filter((e) => !COUNTED_TYPES.has(e.type));
+    const counted = {};
+    for (const e of entries.filter((x) => COUNTED_TYPES.has(x.type))) {
+      const k = `${e.type} on ${e.parentName}`;
+      counted[k] = (counted[k] ?? 0) + 1;
+    }
+    return {
+      current: sessionInfo(session),
+      sessions,
+      total: entries.length,
+      documents: named.slice(0, limit).map(brief),
+      more: named.length > limit ? named.length - limit : undefined,
+      mapPieces: Object.keys(counted).length ? counted : undefined,
+      note: entries.length ? undefined : `Nothing tagged for "${ref}". Things made before session tagging (module v0.3.0) aren't tracked.`,
+    };
+  },
+
+  async "session.cleanup"({ session: ref, confirm, includeCharacterItems }) {
+    if (!ref) throw new Error("Say which session to clean up: 'current', a session name, or an ID from session_log.");
+    const entries = scanTagged((tag) => matchesSession(tag, ref, session.id));
+    if (!entries.length) return { found: 0, note: `Nothing tagged for "${ref}". Use session_log with session 'all' to see the sessions.` };
+    const plan = planCleanup(entries, { includeCharacterItems });
+    const sessions = summarizeSessions(entries, session.id).map(formatSession);
+    const notTracked = "Uploaded files and chat messages are not removed.";
+    if (confirm !== true) {
+      return {
+        preview: true,
+        sessions,
+        willDelete: describePlan(plan),
+        kept: plan.kept.length ? plan.kept : undefined,
+        notTracked,
+        next: "Nothing deleted yet. Show this to the GM, and call again with confirm: true only if they say yes.",
+      };
+    }
+
+    const errors = [];
+    const done = { top: [], embedded: [], folders: [] };
+    const kept = [...plan.kept];
+
+    // Things Claude added to scenes, actors and journals it didn't make.
+    const byParent = new Map();
+    for (const e of plan.embedded) {
+      const key = `${e.parentUuid}|${e.type}`;
+      if (!byParent.has(key)) byParent.set(key, { parent: e.doc.parent, type: e.type, list: [] });
+      byParent.get(key).list.push(e);
+    }
+    for (const { parent, type, list } of byParent.values()) {
+      const live = list.filter((e) => parent.getEmbeddedCollection(type).get(e.doc.id));
+      if (!live.length) continue;
+      try {
+        await parent.deleteEmbeddedDocuments(type, live.map((e) => e.doc.id));
+        done.embedded.push(...live);
+      } catch (err) {
+        errors.push(`${type} on ${parent.name}: ${err.message}`);
+      }
+    }
+
+    // Whole documents, a type at a time.
+    for (const type of TOP_TYPES) {
+      if (type === "Folder") continue;
+      const collection = game.collections.get(type);
+      const live = plan.top.filter((e) => e.type === type && collection?.get(e.doc.id));
+      if (!live.length) continue;
+      try {
+        await docClass(type).deleteDocuments(live.map((e) => e.doc.id));
+        done.top.push(...live);
+      } catch (err) {
+        errors.push(`${type}: ${err.message}`);
+      }
+    }
+
+    // Folders last, and only when nothing is left in them.
+    for (const e of plan.folders) {
+      const f = game.folders.get(e.doc.id);
+      if (!f) continue;
+      const hasDocs = game.collections.get(f.type)?.some((d) => d.folder?.id === f.id);
+      const hasFolders = game.folders.some((x) => x.folder?.id === f.id);
+      if (hasDocs || hasFolders) {
+        kept.push({ uuid: e.uuid, name: e.name, reason: "folder still holds things that weren't part of this cleanup" });
+        continue;
+      }
+      try {
+        await f.delete();
+        done.folders.push(e);
+      } catch (err) {
+        errors.push(`Folder ${e.name}: ${err.message}`);
+      }
+    }
+
+    return {
+      sessions,
+      deleted: describePlan(done),
+      kept: kept.length ? kept : undefined,
+      errors: errors.length ? errors : undefined,
+      notTracked,
+    };
   },
 
   async "script.run"({ code }) {

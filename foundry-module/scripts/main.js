@@ -1,5 +1,5 @@
 // Foundry MCP Bridge: connects the GM's browser to the local MCP server so Claude can work in this world.
-import { handlers } from "./handlers.js";
+import { ensureSession, handlers } from "./handlers.js";
 
 const MODULE_ID = "foundry-mcp";
 const loc = (key) => game.i18n.localize(`FOUNDRYMCP.${key}`);
@@ -92,6 +92,7 @@ function connect() {
     const handler = handlers[msg.action];
     if (!handler) return reply({ ok: false, error: `Unknown action "${msg.action}". Update the Foundry module to match the MCP server.` });
     try {
+      await ensureSession();
       const result = await handler(msg.params ?? {});
       reply({ ok: true, result: result ?? null });
     } catch (err) {
@@ -131,6 +132,8 @@ Hooks.once("init", () => {
   register("serverUrl", { label: "ServerUrl", options: { type: String, default: "ws://localhost:31415" } });
   register("token", { label: "Token", options: { type: String, default: "" } });
   register("allowScripts", { label: "AllowScripts", options: { type: Boolean, default: false, onChange: () => {} } });
+  // The session Claude tags new things with. Stored in the world so it carries across chats.
+  game.settings.register(MODULE_ID, "session", { scope: "world", config: false, type: Object, default: {} });
 });
 
 Hooks.once("ready", () => {
