@@ -30,21 +30,29 @@ What the Foundry MCP server can do today, and what's planned next. Built for a P
 - **v0.3.1:** fixes creates failing after a token, wall or item was added ("folders is not a valid embedded Document within the Scene Document"). A shared `{ keepId: true }` options object picked up Foundry's `parent`; every create now gets a fresh one
 - Live-tested on v0.3.1 (2026-10-23): import into a folder, hidden token on an existing scene, linked journal, `session_log`, cleanup preview and confirm. The scene kept its other tokens
 
-## Built, not yet released: rewards (Tier 2, item 5)
+## Built, not yet released: v0.4.0 (items 5, 7, 8 and 9)
 
-On branch `feature/rewards`; needs a module release (v0.4.0) and a live test on dev.
+On branch `feature/rewards`, one commit per item. Ships as one module release (v0.4.0) after a live test on dev.
+
+### Rewards (Tier 2, item 5)
 - `award_xp`: XP for the PF2e Party or chosen characters, from a number, an accomplishment (minor 10, moderate 30, major 80) and/or the creatures defeated (always the four-PC award, as GM Core says). Shows before and after, flags anyone ready to level up, optional public chat note, `dryRun` preview. XP isn't a document, so each character keeps a short log of Claude's awards: `session_log` lists them and `cleanup_session` says they stay (a negative award takes XP back)
 - `give_treasure`: a share of the level's treasure (default a quarter) or a gp budget, using GM Core's Party Treasure by Level table, with the extra-PC rule (one permanent item, two consumables and currency per character past four, or less for smaller parties). Picks common items at random from the official PF2e compendiums (homebrew only when nothing official fits a level, then a level lower), skipping cursed, artifact, intelligent and snare items; uncommon on request. Coins are tagged coin stacks. Goes to the Party stash, a character, or a new loot actor. Previews by default; the preview's items and coins are passed back to give exactly those, and `seed` repeats a pick
 - Everything given is session-tagged. Items in the Party stash now count like items on player characters, so cleanup keeps them unless `includeCharacterItems`
 
-## Next: Tier 2, story
+### Music and ambience (Tier 2, item 7)
+- `find_audio`: playlists and tracks by a loose name ("tavern music" looks for "tavern"), in the world and in compendium playlists, plus what's playing
+- `audio_control`: play (switches off other playlists unless `exclusive: false`, for layering rain over music), stop one or everything, or status; optional volume. A compendium playlist is imported as a tagged copy first
+- `create_playlist`: a tagged playlist from sound paths (e.g. from `upload_asset`), or tagged tracks added to an existing one. Cleanup now finds tracks added to the GM's playlists
 
-7. **Music and ambience.** Play, stop or switch playlists ("tavern music", "battle drums").
+### Map preview (Tier 3, item 8)
+- `preview_scene`: a picture of any scene, drawn in the GM's browser without switching views: map art and tiles, a grid numbered from 0 at the top-left, walls and doors by colour, tokens as boxes (dashed when hidden), lights and pins, returned to Claude as an image with a legend. Layers can be turned off. Art hosted on a site that blocks reading it back is left out with a note
 
-## Later: Tier 3, maps
+### Map art (Tier 3, item 9)
+- `create_map_scene`: an image (local file, URL, base64 or a Foundry path), for example from the Claude app's image tools, becomes a scene sized to the grid asked for (`columns`, `rows`, or the art's own `pixelsPerSquare`; otherwise 25 squares on the long side). Rooms and doors become walls and doors, with no floors drawn over the art. Then `preview_scene` to check it lines up
+- `upload_asset` now works out a missing file extension from the image bytes
 
-8. **Map preview.** Capture a picture of a scene and send it back to Claude, so it can check that its maps look right.
-9. **Map art.** Generate battle map images with the image tools in the Claude app, then upload them as scenes with walls.
+## Next
+
 10. **Spell areas and Regions.** Spell area templates, and v14 Regions for traps, difficult terrain and teleporters.
 
 ## Housekeeping

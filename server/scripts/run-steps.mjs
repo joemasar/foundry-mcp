@@ -2,7 +2,7 @@
 // Usage: node scripts/run-steps.mjs steps.json
 // steps.json is a list of {"tool": "...", "args": {...}}. The script starts the server, waits for the
 // GM's Foundry tab to connect (it retries on its own), runs each step and prints the results.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -27,9 +27,18 @@ for (;;) {
   await new Promise((res) => setTimeout(res, 2000));
 }
 
+// Images (from preview_scene) are saved next to the steps file.
+const outDir = dirname(process.argv[2]);
 for (const [i, step] of steps.entries()) {
   const r = await client.callTool({ name: step.tool, arguments: step.args ?? {} });
   console.log(`\n=== ${i + 1}. ${step.tool}${r.isError ? "  [ERROR]" : ""}`);
-  console.log(r.content[0].text);
+  for (const [j, part] of r.content.entries()) {
+    if (part.type === "image") {
+      const ext = part.mimeType.split("/")[1] === "jpeg" ? "jpg" : part.mimeType.split("/")[1];
+      const file = join(outDir, `step${i + 1}-${j + 1}.${ext}`);
+      writeFileSync(file, Buffer.from(part.data, "base64"));
+      console.log(`(image saved to ${file})`);
+    } else if (part.type === "text") console.log(part.text);
+  }
 }
 await client.close();
