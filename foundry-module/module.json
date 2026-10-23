@@ -1,0 +1,13 @@
+{
+  "id": "foundry-mcp",
+  "title": "Foundry MCP Bridge",
+  "description": "Lets Claude help the GM: create creatures, items, journals, scenes and more through an MCP server running on the GM's computer.",
+  "version": "0.1.0",
+  "authors": [{ "name": "Joe Masar" }],
+  "compatibility": {
+    "minimum": "13",
+    "verified": "14.369"
+  },
+  "esmodules": ["scripts/main.js"],
+  "languages": [{ "lang": "en", "name": "English", "path": "languages/en.json" }]
+}

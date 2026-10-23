@@ -1,0 +1,13 @@
+{
+  "FOUNDRYMCP.ServerUrl": "MCP server URL",
+  "FOUNDRYMCP.ServerUrlHint": "Where the Foundry MCP server is listening. Leave as ws://localhost:31415 unless you changed FOUNDRY_MCP_PORT.",
+  "FOUNDRYMCP.Token": "Connection token",
+  "FOUNDRYMCP.TokenHint": "Paste the token from ~/.foundry-mcp/token on the computer running Claude (or the FOUNDRY_MCP_TOKEN you set).",
+  "FOUNDRYMCP.Enabled": "Connect to Claude",
+  "FOUNDRYMCP.EnabledHint": "When on, the GM's browser connects to the MCP server and lets Claude change this world.",
+  "FOUNDRYMCP.AllowScripts": "Allow scripts",
+  "FOUNDRYMCP.AllowScriptsHint": "Let Claude run custom JavaScript in this browser (the run_script tool). Powerful; leave off unless you need it.",
+  "FOUNDRYMCP.Connected": "Foundry MCP: connected to Claude.",
+  "FOUNDRYMCP.Disconnected": "Foundry MCP: connection to Claude lost. Retrying in the background.",
+  "FOUNDRYMCP.BadToken": "Foundry MCP: the server rejected the token. Check the token in module settings."
+}
