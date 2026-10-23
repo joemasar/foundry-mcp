@@ -46,7 +46,7 @@ What the Foundry MCP server can do today, and what's planned next. Built for a P
 - **Untagged older content:** things Claude made before v0.3.0 aren't tagged, so `session_log` and `cleanup_session` can't find them. Clean those up by hand.
 - **Live check after a release:** start a 'test' session, import a creature into a folder, place a hidden token on an existing scene, create a journal in the same folder, then `session_log` and `cleanup_session` (preview, then confirm), and check the scene kept its other tokens. Last run: v0.3.1, 2026-10-23, all passed.
 - **After testing:** start a real session (e.g. 'Session 13') so game-night content isn't tagged 'test'.
-- **Production install:** not done yet. Use the same manifest URL as dev, enable the module in the world, and paste the token.
+- **Production install:** after item 10 ships; until then, build and test on dev only. Then use the same manifest URL as dev, enable the module in the world, and paste the token.
 - **Tool list refresh:** after changing the server code, reconnect foundry-vtt in `/mcp` or start a new chat. A running chat keeps the tool list it started with.
 - **Live testing:** `server/scripts/run-steps.mjs <steps.json>` drives the server against a real world without needing the chat's tool list.
 
