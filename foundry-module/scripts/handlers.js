@@ -1113,7 +1113,7 @@ export const handlers = {
       if (!name) throw new Error("Give the new name.");
       updates = ids.map((_id, i) => ({ _id, name: ids.length > 1 ? `${name} ${i + 1}` : name }));
     } else throw new Error(`Unknown action ${action}`);
-    const done = await scene.updateEmbeddedDocuments("Token", updates);
+    await scene.updateEmbeddedDocuments("Token", updates);
     // Hidden combatants should follow their tokens.
     if (action === "reveal" || action === "hide") {
       for (const combat of game.combats.filter((cb) => cb.scene?.id === scene.id)) {
@@ -1121,7 +1121,7 @@ export const handlers = {
         if (cUpdates.length) await combat.updateEmbeddedDocuments("Combatant", cUpdates);
       }
     }
-    return { scene: scene.name, [action === "rename" ? "renamed" : action === "hide" ? "hidden" : "revealed"]: done.map((t) => t.name) };
+    return { scene: scene.name, [action === "rename" ? "renamed" : action === "hide" ? "hidden" : "revealed"]: list.map((t) => scene.tokens.get(t.id)?.name ?? t.name) };
   },
 
   async "tokens.hp"({ sceneUuid, tokens, mode, amount, damageType }) {
