@@ -1095,6 +1095,67 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     },
   );
 
+  // ---------- Music and ambience ----------
+
+  server.registerTool(
+    "find_audio",
+    {
+      title: "Find music",
+      description:
+        "Find playlists and tracks by a loose name ('tavern', 'battle drums', 'rain'), in the world and in compendium playlists, and see what's playing now. Leave the query empty to list everything.",
+      inputSchema: {
+        query: z.string().default(""),
+        limit: z.number().int().min(1).max(50).default(10),
+        compendiums: z.boolean().default(true).describe("Also look in compendium playlists."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => call("audio.find", args, 60_000),
+  );
+
+  server.registerTool(
+    "audio_control",
+    {
+      title: "Play or stop music",
+      description:
+        "Play, switch or stop music and ambience for everyone at the table. 'play' starts the best match for the query (or a UUID from find_audio) and by default stops whatever else is playing, so it also switches tracks; a compendium playlist is imported first. 'stop' stops the match, or everything when no query or UUID is given. 'status' shows what's playing. Only change the music when the GM asks.",
+      inputSchema: {
+        action: z.enum(["play", "stop", "status"]),
+        query: z.string().optional().describe("Loose name of a playlist or track, e.g. 'tavern music'."),
+        uuid: z.string().optional().describe("Playlist or track UUID from find_audio. Wins over query."),
+        exclusive: z.boolean().default(true).describe("On play, stop other playlists first. false layers it (e.g. rain over tavern music)."),
+        volume: z.number().min(0).max(1).optional().describe("Volume slider position 0-1 for what's played."),
+      },
+    },
+    (args) => call("audio.control", args),
+  );
+
+  server.registerTool(
+    "create_playlist",
+    {
+      title: "Create a playlist",
+      description:
+        "Create a playlist from sound files already in Foundry (e.g. paths from upload_asset), or add tracks to an existing playlist with playlistUuid. Everything made is tagged with the session.",
+      inputSchema: {
+        name: z.string().optional().describe("Name of the new playlist. Not needed with playlistUuid."),
+        playlistUuid: z.string().optional().describe("Add the tracks to this playlist instead."),
+        sounds: z
+          .array(
+            z.object({
+              path: z.string().describe("Foundry path of the audio file."),
+              name: z.string().optional().describe("Defaults to the file name."),
+              repeat: z.boolean().default(true),
+              volume: z.number().min(0).max(1).default(0.5).describe("Slider position 0-1."),
+            }),
+          )
+          .min(1),
+        mode: z.enum(["sequential", "shuffle", "simultaneous"]).default("sequential").describe("simultaneous plays every track together (layered ambience)."),
+        folder: folderRef,
+      },
+    },
+    (args) => call("audio.createPlaylist", args),
+  );
+
   // ---------- Session log ----------
 
   const sessionRef = z

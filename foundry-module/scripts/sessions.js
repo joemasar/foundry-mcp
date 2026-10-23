@@ -12,6 +12,7 @@ export const EMBEDDED = {
   Scene: { tokens: "Token", walls: "Wall", lights: "AmbientLight", notes: "Note", drawings: "Drawing", sounds: "AmbientSound", tiles: "Tile" },
   Actor: { items: "Item" },
   JournalEntry: { pages: "JournalEntryPage" },
+  Playlist: { sounds: "PlaylistSound" },
 };
 
 // Walls, lights and drawings have no useful names, so lists show them as counts.

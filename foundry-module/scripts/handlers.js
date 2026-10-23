@@ -1,6 +1,7 @@
 // Every action the MCP server can ask for. Each handler gets the tool's parameters and returns
 // plain JSON. Throwing an Error sends its message back to Claude.
 
+import { rankByName, volumeFromSlider } from "./audio.js";
 import { COUNTED_TYPES, EMBEDDED, TOP_TYPES, addXpLog, describePlan, isExpired, makeTag, matchesSession, newSession, planCleanup, summarizeSessions, tagOf, xpAwardsFor } from "./sessions.js";
 
 const MODULE_ID = "foundry-mcp";
@@ -470,6 +471,32 @@ function isCharacter(actor) {
 function xpAwards(ref) {
   const actors = game.actors.filter((a) => a.type === "character").map((a) => ({ name: a.name, uuid: a.uuid, log: a.flags?.[MODULE_ID]?.xpLog }));
   return xpAwardsFor(actors, ref, session.id).map((x) => ({ ...x, at: new Date(x.at).toLocaleString() }));
+}
+
+// ---------- audio helpers ----------
+
+function playlistBrief(p) {
+  return { uuid: p.uuid, name: p.name, playing: p.playing || undefined, tracks: p.sounds.size };
+}
+
+function soundBrief(s) {
+  return { uuid: s.uuid, name: s.name, playlist: s.parent?.name, playing: s.playing || undefined, repeat: s.repeat || undefined };
+}
+
+function audioPlaying() {
+  return game.playlists.playing.map((p) => ({ playlist: p.name, uuid: p.uuid, tracks: p.sounds.filter((s) => s.playing).map((s) => s.name) }));
+}
+
+// Best match for a loose name: a playlist when it fits at least as well as any single track.
+function findAudio(query) {
+  const [playlist] = rankByName([...game.playlists], query);
+  const allSounds = game.playlists.contents.flatMap((p) => p.sounds.contents);
+  const [sound] = rankByName(allSounds, query, (s) => s.parent?.name ?? "");
+  if (!playlist) return sound ?? null;
+  if (!sound) return playlist;
+  const exactSound = sound.name.toLowerCase() === String(query).trim().toLowerCase();
+  const exactList = playlist.name.toLowerCase() === String(query).trim().toLowerCase();
+  return exactSound && !exactList ? sound : playlist;
 }
 
 // ---------- treasure helpers ----------
@@ -1569,6 +1596,109 @@ export const handlers = {
       notFound: notFound.length ? notFound : undefined,
       untrackedCoins: untrackedCoins ? { ...untrackedCoins, note: "added to the existing coins; cleanup_session can't take these back" } : undefined,
     };
+  },
+
+  // ---------- music and ambience ----------
+
+  async "audio.find"({ query = "", limit = 10, compendiums = true }) {
+    const playlists = rankByName([...game.playlists], query).slice(0, limit);
+    const allSounds = game.playlists.contents.flatMap((p) => p.sounds.contents);
+    const sounds = rankByName(allSounds, query, (s) => s.parent?.name ?? "").slice(0, limit);
+    const fromPacks = [];
+    if (compendiums && query) {
+      for (const p of game.packs.filter((x) => x.documentName === "Playlist")) {
+        const index = await p.getIndex();
+        for (const e of rankByName([...index], query).slice(0, limit)) {
+          fromPacks.push({ uuid: e.uuid ?? `Compendium.${p.collection}.Playlist.${e._id}`, name: e.name, pack: p.title });
+        }
+      }
+    }
+    return {
+      playing: audioPlaying(),
+      playlists: playlists.map(playlistBrief),
+      tracks: sounds.map(soundBrief),
+      compendiumPlaylists: fromPacks.length ? fromPacks.slice(0, limit) : undefined,
+      note: game.playlists.size ? undefined : "This world has no playlists yet. Use create_playlist with uploaded sound files.",
+    };
+  },
+
+  async "audio.control"({ action, query, uuid, exclusive = true, volume }) {
+    if (action === "status") return { playing: audioPlaying() };
+    let target = null;
+    let imported;
+    if (uuid) {
+      target = await getDoc(uuid, "playlist or track");
+      if (target.pack && target.documentName === "Playlist") {
+        // A compendium playlist: bring a tagged copy into the world first.
+        const r = await handlers["compendium.import"]({ uuid });
+        target = await fromUuid(r.created[0].uuid);
+        imported = target.uuid;
+      }
+      if (!["Playlist", "PlaylistSound"].includes(target.documentName)) throw new Error(`"${uuid}" is not a playlist or track.`);
+    } else if (query) {
+      target = findAudio(query);
+      if (!target) throw new Error(`No playlist or track matches "${query}". Use find_audio to see what's there.`);
+    }
+
+    if (action === "stop") {
+      if (!target) {
+        const stopped = game.playlists.playing.map((p) => p.name);
+        for (const p of game.playlists.playing) await p.stopAll();
+        return { stopped, playing: audioPlaying() };
+      }
+      if (target.documentName === "Playlist") await target.stopAll();
+      else await target.parent.stopSound(target);
+      return { stopped: [target.name], playing: audioPlaying() };
+    }
+
+    if (action !== "play") throw new Error(`Unknown action "${action}".`);
+    if (!target) throw new Error("Say what to play: a query like 'tavern music' or a UUID from find_audio.");
+    const playlist = target.documentName === "Playlist" ? target : target.parent;
+    const stopped = [];
+    if (exclusive) {
+      for (const p of game.playlists.playing) {
+        if (p.id === playlist.id) continue;
+        stopped.push(p.name);
+        await p.stopAll();
+      }
+    }
+    if (volume !== undefined) {
+      const sounds = target.documentName === "Playlist" ? target.sounds.contents : [target];
+      const v = volumeFromSlider(volume);
+      await playlist.updateEmbeddedDocuments("PlaylistSound", sounds.map((s) => ({ _id: s.id, volume: v })));
+    }
+    if (target.documentName === "Playlist") {
+      if (!target.sounds.size) throw new Error(`"${target.name}" has no tracks.`);
+      if (target.mode === CONST.PLAYLIST_MODES.DISABLED) await target.update({ mode: CONST.PLAYLIST_MODES.SEQUENTIAL });
+      await target.playAll();
+    } else {
+      await playlist.playSound(target);
+    }
+    return { playing: audioPlaying(), started: target.name, stopped: stopped.length ? stopped : undefined, imported };
+  },
+
+  async "audio.createPlaylist"({ name, playlistUuid, sounds, mode = "sequential", folder }) {
+    const modes = { sequential: CONST.PLAYLIST_MODES.SEQUENTIAL, shuffle: CONST.PLAYLIST_MODES.SHUFFLE, simultaneous: CONST.PLAYLIST_MODES.SIMULTANEOUS };
+    const soundData = sounds.map((s) => ({
+      name: s.name ?? s.path.split("/").pop().replace(/\.[^.]+$/, ""),
+      path: s.path,
+      repeat: s.repeat ?? true,
+      volume: volumeFromSlider(s.volume ?? 0.5),
+    }));
+    if (playlistUuid) {
+      const playlist = await getDoc(playlistUuid, "playlist");
+      if (playlist.documentName !== "Playlist") throw new Error(`"${playlistUuid}" is not a playlist.`);
+      const created = await embedTagged(playlist, "PlaylistSound", soundData);
+      return { playlist: playlistBrief(playlist), added: created.map(soundBrief) };
+    }
+    if (!name) throw new Error("Give a name for the new playlist, or a playlistUuid to add to.");
+    const playlist = await createTagged(Playlist.implementation, {
+      name,
+      mode: modes[mode] ?? modes.sequential,
+      folder: await getFolderId(folder, "Playlist"),
+      sounds: soundData,
+    });
+    return { playlist: playlistBrief(playlist), tracks: playlist.sounds.contents.map(soundBrief) };
   },
 
   // ---------- session log ----------
