@@ -24,8 +24,11 @@ if ($LASTEXITCODE -ne 0) { throw "zip failed" }
 Write-Host "Built $zip"
 
 if ($NoPublish) { return }
-git -C $root add foundry-module/module.json
-git -C $root commit -m "Release module v$Version"
-git -C $root tag "v$Version"
-git -C $root push origin HEAD --tags
-gh release create "v$Version" $zip $manifestPath --repo joemasar/foundry-mcp --title "v$Version" --notes "Foundry MCP Bridge v$Version"
+# git prints harmless warnings (like line endings) to stderr; check exit codes instead.
+$ErrorActionPreference = "Continue"
+function Run([scriptblock]$cmd) { & $cmd 2>&1 | Out-Host; if ($LASTEXITCODE -ne 0) { throw "Failed: $cmd" } }
+Run { git -C $root add foundry-module/module.json }
+Run { git -C $root commit -m "Release module v$Version" }
+Run { git -C $root tag "v$Version" }
+Run { git -C $root push origin HEAD --tags }
+Run { gh release create "v$Version" $zip $manifestPath --repo joemasar/foundry-mcp --title "v$Version" --notes "Foundry MCP Bridge v$Version" }
