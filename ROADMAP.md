@@ -20,12 +20,15 @@ What the Foundry MCP server can do today, and what's planned next. Built for a P
 - **Encounters:** rate a fight with the PF2e XP rules using the Party's level and size; build a themed fight that fits a difficulty, imports it, places it hidden in an area without overlapping tokens, and writes a GM journal (with a dry-run preview)
 - **Chat log:** recent messages and rolls, with check type, DC, target and outcome
 
-### v0.3: session log (Tier 2, item 6; not released yet)
+### v0.3: session log (Tier 2, item 6)
 - Everything Claude creates is tagged with the current session: documents, folders, combats, and tokens, walls, lights, pins, journal pages and items it adds to things the GM made
 - `start_session` names a session ("Session 12", "test"); otherwise one named after the date and time starts on its own and lasts 12 hours. The session is stored in the world, so it carries across chats
 - `session_log` lists what a session made, or every session with counts
 - `cleanup_session` previews, then deletes on confirm. It keeps the active scene, folders that still hold other things, and items on player characters unless asked
 - `list_documents` returns folder IDs and can list folders
+- Released as v0.3.0, with the fix that makes reveal, hide and rename list every token they touched
+- **v0.3.1:** fixes creates failing after a token, wall or item was added ("folders is not a valid embedded Document within the Scene Document"). A shared `{ keepId: true }` options object picked up Foundry's `parent`; every create now gets a fresh one
+- Live-tested on v0.3.1 (2026-10-23): import into a folder, hidden token on an existing scene, linked journal, `session_log`, cleanup preview and confirm. The scene kept its other tokens
 
 ## Next: Tier 2, story and rewards
 
@@ -40,8 +43,9 @@ What the Foundry MCP server can do today, and what's planned next. Built for a P
 
 ## Housekeeping
 
-- **Unreleased:** the session log (v0.3) and the fix that makes reveal, hide and rename list every token they touched. Ship both as module v0.3.0. Things made before then aren't tagged, so cleanup can't find them.
-- **Live check after release:** start a 'test' session, import a creature, place a token on an existing scene, then `session_log` and `cleanup_session` (preview, then confirm).
+- **Untagged older content:** things Claude made before v0.3.0 aren't tagged, so `session_log` and `cleanup_session` can't find them. Clean those up by hand.
+- **Live check after a release:** start a 'test' session, import a creature into a folder, place a hidden token on an existing scene, create a journal in the same folder, then `session_log` and `cleanup_session` (preview, then confirm), and check the scene kept its other tokens. Last run: v0.3.1, 2026-10-23, all passed.
+- **After testing:** start a real session (e.g. 'Session 13') so game-night content isn't tagged 'test'.
 - **Production install:** not done yet. Use the same manifest URL as dev, enable the module in the world, and paste the token.
 - **Tool list refresh:** after changing the server code, reconnect foundry-vtt in `/mcp` or start a new chat. A running chat keeps the tool list it started with.
 - **Live testing:** `server/scripts/run-steps.mjs <steps.json>` drives the server against a real world without needing the chat's tool list.
