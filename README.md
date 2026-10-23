@@ -24,10 +24,11 @@ npm run build
 
 ### 2. Connect Claude
 
-- **Claude Code / Claude desktop app (Code tab):** sessions opened in `C:\dev\foundry-mcp` pick up [.mcp.json](.mcp.json) automatically. To have it in every project, run:
+- **Claude Code / Claude desktop app (Code tab):** register it once as a user-level server, so it's in every chat and shows in `/mcp` (where you can reconnect it after rebuilding the server):
   ```bash
   claude mcp add --scope user foundry-vtt -- node C:/dev/foundry-mcp/server/dist/index.js
   ```
+  The desktop app bundles `claude.exe` under `%LOCALAPPDATA%\Claude-Data\...\claude-code\<version>\` if it isn't on your PATH.
 - **Claude Desktop (chat):** Settings > Developer > Edit Config, and add:
   ```json
   {

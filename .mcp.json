@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "foundry-vtt": {
-      "command": "node",
-      "args": ["C:/dev/foundry-mcp/server/dist/index.js"]
-    }
-  }
-}
