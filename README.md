@@ -43,8 +43,14 @@ On first start the server creates a token in `%USERPROFILE%\.foundry-mcp\token`.
 
 ### 3. Install the Foundry module
 
-- **Local Foundry:** `.\install-module.ps1 -DataPath "<your User Data Path>"`, or copy the `foundry-module` folder to `<User Data>\Data\modules\foundry-mcp`.
-- **The Forge / hosted:** zip the *contents* of `foundry-module` and upload it as a custom module, or copy the folder into `Data/modules/foundry-mcp` through your host's file manager.
+- **Any Foundry server (recommended):** on the Foundry setup screen, go to **Add-on Modules** > **Install Module**, paste this into **Manifest URL**, and click Install:
+  ```
+  https://github.com/joemasar/foundry-mcp/releases/latest/download/module.json
+  ```
+  Later versions show up under **Check for Updates**.
+- **Local Foundry, from this folder:** `.\install-module.ps1 -DataPath "<your User Data Path>"`.
+
+To publish a new module version: `.\release-module.ps1 -Version 0.1.1`.
 
 Then, in your world: **Manage Modules** > enable **Foundry MCP Bridge** > **Configure Settings** > **Foundry MCP Bridge**:
 
