@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { FoundryBridge } from "./bridge.js";
 import { buildLayout } from "./mapLayout.js";
-import { DIFFICULTIES, budgetFor, evaluateEncounter, pickEncounter, spreadPositions, type Difficulty } from "./encounter.js";
+import { DIFFICULTIES, budgetFor, evaluateEncounter, pickEncounter, type Difficulty } from "./encounter.js";
 
 const MAX_TEXT = 60_000;
 
@@ -510,11 +510,15 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     {
       title: "Place tokens",
       description:
-        "Put creatures on a scene. Each position is a grid square (column, row) counted from the top-left of the map. If you ask for more tokens than positions, the extras are placed in a row next to the last one.",
+        "Put creatures on a scene. Each position is a grid square (column, row) counted from the top-left of the map. Give exact positions, or an area and the tokens are spread over free squares in it without overlapping. With positions, extra tokens go in a row next to the last one.",
       inputSchema: {
         sceneUuid: sceneRef,
         actorUuid: z.string().describe("World actor UUID. Import compendium creatures first."),
-        positions: z.array(z.object({ x: z.number(), y: z.number() })).min(1),
+        positions: z.array(z.object({ x: z.number(), y: z.number() })).optional().describe("Exact squares, one per token."),
+        area: z
+          .object({ x: z.number().int(), y: z.number().int(), w: z.number().int().min(1), h: z.number().int().min(1) })
+          .optional()
+          .describe("Or a grid area: tokens go on free squares inside it, sized for the creature (Large takes 2x2)."),
         count: z.number().int().min(1).max(50).optional(),
         hidden: z.boolean().default(false).describe("Hidden from players until revealed (for ambushes)."),
         name: z.string().optional().describe("Override the token name, e.g. 'Cultist'. Numbers are appended when placing several."),
@@ -890,12 +894,9 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
         if (args.dryRun) return text({ dryRun: true, target: args.difficulty, budget, picks: chosen, evaluation });
 
         const folder = args.folder ?? args.name;
-        const total = chosen.reduce((n, c) => n + c.count, 0);
         if (args.sceneUuid && !args.area) throw new Error("Give an area to place the creatures in.");
-        const positions = args.sceneUuid && args.area ? spreadPositions(args.area, total) : [];
 
         const created: { name: string; actorUuid: string; count: number; level: number; tokens?: string[] }[] = [];
-        let posIndex = 0;
         for (const c of chosen) {
           const imp = await bridge.request<{ created: { uuid: string; name: string }[] }>("compendium.import", { uuid: c.uuid, folder });
           const actorUuid = imp.created[0].uuid;
@@ -904,12 +905,11 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
             const placed = await bridge.request<{ tokens: { name: string }[] }>("scene.placeTokens", {
               sceneUuid: args.sceneUuid,
               actorUuid,
-              positions: positions.slice(posIndex, posIndex + c.count),
+              area: args.area,
               count: c.count,
               hidden: args.hidden,
             });
             row.tokens = placed.tokens.map((t) => t.name);
-            posIndex += c.count;
           }
           created.push(row);
         }

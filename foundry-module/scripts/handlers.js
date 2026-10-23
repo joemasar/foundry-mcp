@@ -51,9 +51,18 @@ function docClass(name) {
 
 function htmlToText(html, max = 8000) {
   if (!html) return "";
+  // A detached element has no layout, so innerText runs words together; walk the text nodes instead,
+  // with line breaks after block elements.
   const div = document.createElement("div");
   div.innerHTML = html;
-  const out = (div.innerText || div.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
+  for (const el of div.querySelectorAll("p, div, li, h1, h2, h3, h4, h5, h6, tr, br, blockquote")) el.after("\n");
+  const parts = [];
+  const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const t = walker.currentNode.nodeValue.replace(/[ \t]+/g, " ");
+    if (t.trim() || t.includes("\n")) parts.push(t.includes("\n") && !t.trim() ? "\n" : t.trim());
+  }
+  const out = parts.join(" ").replace(/ *\n */g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   return out.length > max ? out.slice(0, max) + " ..." : out;
 }
 
@@ -213,6 +222,14 @@ async function changeHp(token, mode, amount, damageType) {
   }
   const after = actor.system.attributes.hp;
   return { token: token.name, before, after: after.value, max: after.max, temp: after.temp || undefined, conditions: conditionsOf(actor), note };
+}
+
+// game.combat only covers the scene the GM is looking at. Fall back to the newest active combat anywhere.
+function findCombat() {
+  if (game.combat) return game.combat;
+  const active = game.combats.contents.filter((c) => c.active);
+  active.sort((a, b) => Number(b.started) - Number(a.started) || (b._stats?.createdTime ?? 0) - (a._stats?.createdTime ?? 0));
+  return active[0] ?? null;
 }
 
 function combatSummary(c) {
@@ -403,8 +420,8 @@ export const handlers = {
         tables: game.tables.size,
         compendiums: game.packs.size,
       },
-      combat: game.combat
-        ? { round: game.combat.round, turn: game.combat.turn, current: game.combat.combatant?.name, combatants: game.combat.combatants.size }
+      combat: findCombat()
+        ? (({ round, turn, combatant, combatants, scene: cs }) => ({ round, turn, current: combatant?.name, combatants: combatants.size, scene: cs?.name }))(findCombat())
         : null,
       scriptsAllowed: game.settings.get(MODULE_ID, "allowScripts"),
     };
@@ -905,16 +922,50 @@ export const handlers = {
     return { scene: scene.name, lightsCreated: created.length };
   },
 
-  async "scene.placeTokens"({ sceneUuid, actorUuid, positions, count, hidden, name }) {
+  async "scene.placeTokens"({ sceneUuid, actorUuid, positions = [], area, count, hidden, name }) {
     const scene = await resolveScene(sceneUuid);
     const actor = await getActor(actorUuid);
     if (actor.pack) throw new Error("That actor is in a compendium. Import it with import_from_compendium first, then place the world copy.");
+    if (!positions.length && !area) throw new Error("Give positions or an area.");
     const c = converter(scene, "grid");
-    const total = count ?? positions.length;
-    const step = Math.max(1, Math.round((actor.prototypeToken?.width ?? 1)));
+    const total = count ?? (positions.length || 1);
+
+    // The system sets the real footprint (a Large creature is 2x2), so ask for a token first.
+    const sample = await actor.getTokenDocument({ x: 0, y: 0 });
+    const w = Math.max(1, Math.ceil(sample.width));
+    const h = Math.max(1, Math.ceil(sample.height));
+
+    // Squares already taken by tokens on the scene, so new ones don't stack.
+    const taken = new Set();
+    const mark = (gx, gy, tw, th) => {
+      for (let dx = 0; dx < tw; dx++) for (let dy = 0; dy < th; dy++) taken.add(`${gx + dx},${gy + dy}`);
+    };
+    for (const t of scene.tokens) {
+      const g = toGrid(scene, t.x, t.y);
+      mark(Math.round(g.x), Math.round(g.y), Math.max(1, Math.ceil(t.width)), Math.max(1, Math.ceil(t.height)));
+    }
+    const fits = (gx, gy) => {
+      for (let dx = 0; dx < w; dx++) for (let dy = 0; dy < h; dy++) if (taken.has(`${gx + dx},${gy + dy}`)) return false;
+      return true;
+    };
+    const freeSpot = () => {
+      if (area) {
+        for (let gy = area.y; gy <= area.y + area.h - h; gy++) for (let gx = area.x; gx <= area.x + area.w - w; gx++) if (fits(gx, gy)) return { x: gx, y: gy };
+        // Area full: try the squares just to the right of it.
+        for (let gx = area.x + area.w; gx < area.x + area.w + 20; gx++) for (let gy = area.y; gy < area.y + area.h; gy++) if (fits(gx, gy)) return { x: gx, y: gy };
+      }
+      return null;
+    };
+
     const tokens = [];
     for (let i = 0; i < total; i++) {
-      const pos = positions[i] ?? { x: positions[positions.length - 1].x + step * (i - positions.length + 1), y: positions[positions.length - 1].y };
+      let pos = positions[i];
+      if (!pos) pos = freeSpot();
+      if (!pos) {
+        const last = positions[positions.length - 1] ?? { x: area.x, y: area.y };
+        pos = { x: last.x + w * (i - positions.length + 1), y: last.y };
+      }
+      mark(pos.x, pos.y, w, h);
       const td = await actor.getTokenDocument({ x: c.x(pos.x), y: c.y(pos.y), hidden: !!hidden });
       const obj = td.toObject();
       const base = name ?? obj.name;
@@ -1064,9 +1115,11 @@ export const handlers = {
     } else throw new Error(`Unknown action ${action}`);
     const done = await scene.updateEmbeddedDocuments("Token", updates);
     // Hidden combatants should follow their tokens.
-    if ((action === "reveal" || action === "hide") && game.combat) {
-      const cUpdates = game.combat.combatants.filter((cb) => ids.includes(cb.tokenId)).map((cb) => ({ _id: cb.id, hidden: action === "hide" }));
-      if (cUpdates.length) await game.combat.updateEmbeddedDocuments("Combatant", cUpdates);
+    if (action === "reveal" || action === "hide") {
+      for (const combat of game.combats.filter((cb) => cb.scene?.id === scene.id)) {
+        const cUpdates = combat.combatants.filter((cb) => ids.includes(cb.tokenId)).map((cb) => ({ _id: cb.id, hidden: action === "hide" }));
+        if (cUpdates.length) await combat.updateEmbeddedDocuments("Combatant", cUpdates);
+      }
     }
     return { scene: scene.name, [action === "rename" ? "renamed" : action === "hide" ? "hidden" : "revealed"]: done.map((t) => t.name) };
   },
@@ -1118,11 +1171,11 @@ export const handlers = {
   // ---------- combat ----------
 
   async "combat.status"() {
-    return combatSummary(game.combat);
+    return combatSummary(findCombat());
   },
 
   async "combat.control"({ action, sceneUuid, tokens }) {
-    let combat = game.combat;
+    const combat = findCombat();
     if (!combat) throw new Error("No combat is running. Use start_encounter first.");
     switch (action) {
       case "start":
@@ -1180,7 +1233,7 @@ export const handlers = {
       default:
         throw new Error(`Unknown combat action ${action}`);
     }
-    return combatSummary(game.combat);
+    return combatSummary(game.combats.get(combat.id) ?? findCombat());
   },
 
   // ---------- chat ----------
