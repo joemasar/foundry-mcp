@@ -39,6 +39,7 @@ const server = new McpServer(
       "Put new content in folders (e.g. the current session or story arc) so the GM can find it. Link related documents in journals with @UUID[...]{label}.",
       "Tokens placed for ambushes should be hidden. Don't activate scenes, show journals to players, or post public chat unless the GM asked for it.",
       "Never delete anything the GM did not ask you to delete.",
+      "Rewards are visible to players: preview give_treasure picks (and award_xp with dryRun if the amount isn't the GM's own) before giving them.",
       "Everything you create is tagged with the current session. When the GM asks what you made or to clear it away, use session_log and cleanup_session (preview first, confirm only after they agree). If they say this is a test, call start_session with a name like 'test' first.",
     ].join("\n"),
   },

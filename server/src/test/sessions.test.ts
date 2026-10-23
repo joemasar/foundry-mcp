@@ -100,3 +100,29 @@ test("sessions are summarised newest first with counts", () => {
   assert.deepEqual(out[0].counts, { Actor: 1, Token: 1 });
   assert.equal(out[0].current, true);
 });
+
+test("XP awards are logged per character and found by session", () => {
+  const night = { id: "s1", name: "Session 12" };
+  const test2 = { id: "s2", name: "test" };
+  let log = s.addXpLog(undefined, night, 80, "Crypt Ambush", T0);
+  log = s.addXpLog(log, test2, 30, "", T0 + HOUR);
+  assert.equal(log.length, 2);
+  assert.equal(log[1].reason, undefined);
+
+  const actors = [
+    { name: "Amiri", uuid: "Actor.a", log },
+    { name: "Ezren", uuid: "Actor.e", log: s.addXpLog(null, night, 80, "Crypt Ambush", T0) },
+    { name: "Seelah", uuid: "Actor.s", log: undefined },
+  ];
+  const tonight = s.xpAwardsFor(actors, "session 12", "s2");
+  assert.deepEqual(tonight.map((x: any) => [x.actor, x.xp]), [["Amiri", 80], ["Ezren", 80]]);
+  assert.deepEqual(s.xpAwardsFor(actors, "current", "s2").map((x: any) => x.actor), ["Amiri"]);
+  assert.equal(s.xpAwardsFor(actors, "all", "s2").length, 3);
+});
+
+test("the XP log keeps only the most recent awards", () => {
+  let log: any[] = [];
+  for (let i = 0; i < s.XP_LOG_MAX + 5; i++) log = s.addXpLog(log, { id: "s", name: "x" }, i, "", T0 + i);
+  assert.equal(log.length, s.XP_LOG_MAX);
+  assert.equal(log[0].xp, 5);
+});

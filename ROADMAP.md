@@ -30,9 +30,15 @@ What the Foundry MCP server can do today, and what's planned next. Built for a P
 - **v0.3.1:** fixes creates failing after a token, wall or item was added ("folders is not a valid embedded Document within the Scene Document"). A shared `{ keepId: true }` options object picked up Foundry's `parent`; every create now gets a fresh one
 - Live-tested on v0.3.1 (2026-10-23): import into a folder, hidden token on an existing scene, linked journal, `session_log`, cleanup preview and confirm. The scene kept its other tokens
 
-## Next: Tier 2, story and rewards
+## Built, not yet released: rewards (Tier 2, item 5)
 
-5. **Rewards.** Award XP to the party and hand out treasure that fits the party's level, using PF2e's treasure-by-level rules.
+On branch `feature/rewards`; needs a module release (v0.4.0) and a live test on dev.
+- `award_xp`: XP for the PF2e Party or chosen characters, from a number, an accomplishment (minor 10, moderate 30, major 80) and/or the creatures defeated (always the four-PC award, as GM Core says). Shows before and after, flags anyone ready to level up, optional public chat note, `dryRun` preview. XP isn't a document, so each character keeps a short log of Claude's awards: `session_log` lists them and `cleanup_session` says they stay (a negative award takes XP back)
+- `give_treasure`: a share of the level's treasure (default a quarter) or a gp budget, using GM Core's Party Treasure by Level table, with the extra-PC rule (one permanent item, two consumables and currency per character past four, or less for smaller parties). Picks common items at random from the official PF2e compendiums (homebrew only when nothing official fits a level, then a level lower), skipping cursed, artifact, intelligent and snare items; uncommon on request. Coins are tagged coin stacks. Goes to the Party stash, a character, or a new loot actor. Previews by default; the preview's items and coins are passed back to give exactly those, and `seed` repeats a pick
+- Everything given is session-tagged. Items in the Party stash now count like items on player characters, so cleanup keeps them unless `includeCharacterItems`
+
+## Next: Tier 2, story
+
 7. **Music and ambience.** Play, stop or switch playlists ("tavern music", "battle drums").
 
 ## Later: Tier 3, maps

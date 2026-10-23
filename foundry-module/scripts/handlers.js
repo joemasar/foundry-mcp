@@ -1,7 +1,7 @@
 // Every action the MCP server can ask for. Each handler gets the tool's parameters and returns
 // plain JSON. Throwing an Error sends its message back to Claude.
 
-import { COUNTED_TYPES, EMBEDDED, TOP_TYPES, describePlan, isExpired, makeTag, matchesSession, newSession, planCleanup, summarizeSessions, tagOf } from "./sessions.js";
+import { COUNTED_TYPES, EMBEDDED, TOP_TYPES, addXpLog, describePlan, isExpired, makeTag, matchesSession, newSession, planCleanup, summarizeSessions, tagOf, xpAwardsFor } from "./sessions.js";
 
 const MODULE_ID = "foundry-mcp";
 const PHYSICAL_TYPES = new Set(["equipment", "weapon", "armor", "shield", "consumable", "treasure", "backpack"]);
@@ -461,8 +461,47 @@ function folderDepth(folder) {
   return depth;
 }
 
+// Player characters and the PF2e Party (its stash is shared loot the players can see).
 function isCharacter(actor) {
-  return actor.type === "character" || !!actor.hasPlayerOwner;
+  return actor.type === "character" || actor.type === "party" || !!actor.hasPlayerOwner;
+}
+
+// XP Claude awarded in a session, from the log each character keeps.
+function xpAwards(ref) {
+  const actors = game.actors.filter((a) => a.type === "character").map((a) => ({ name: a.name, uuid: a.uuid, log: a.flags?.[MODULE_ID]?.xpLog }));
+  return xpAwardsFor(actors, ref, session.id).map((x) => ({ ...x, at: new Date(x.at).toLocaleString() }));
+}
+
+// ---------- treasure helpers ----------
+
+const PERMANENT_TYPES = new Set(["weapon", "armor", "shield", "equipment", "backpack"]);
+const CONSUMABLE_TYPES = new Set(["consumable", "ammo"]);
+// Never hand these out as random treasure.
+const SKIP_TREASURE_TRAITS = new Set(["cursed", "artifact", "intelligent", "snare"]);
+const COIN_NAMES = { pp: "Platinum Pieces", gp: "Gold Pieces", sp: "Silver Pieces", cp: "Copper Pieces" };
+
+// Official items come from the PF2e system's own compendiums.
+function isOfficialPack(pack) {
+  return pack.metadata?.packageType === "system";
+}
+
+const coinCache = new Map();
+async function findCoin(denom) {
+  if (coinCache.has(denom)) return coinCache.get(denom);
+  const name = COIN_NAMES[denom];
+  let found = null;
+  const packs = game.packs.filter((p) => p.documentName === "Item" && isOfficialPack(p));
+  packs.sort((a, b) => (b.collection === "pf2e.equipment-srd") - (a.collection === "pf2e.equipment-srd"));
+  for (const p of packs) {
+    const index = await p.getIndex();
+    const e = index.find((x) => x.type === "treasure" && x.name === name);
+    if (e) {
+      found = await p.getDocument(e._id);
+      break;
+    }
+  }
+  coinCache.set(denom, found);
+  return found;
 }
 
 // Every tagged document in the world whose tag passes the filter, including tagged tokens, walls,
@@ -1402,6 +1441,136 @@ export const handlers = {
     return { scene: scene.name, creatures };
   },
 
+  // ---------- rewards ----------
+
+  async "pf2e.awardXp"({ actorUuids, xp, reason, dryRun }) {
+    requirePf2e();
+    if (!Number.isInteger(xp) || xp === 0) throw new Error("Give a whole, non-zero amount of XP.");
+    const actors = actorUuids?.length ? await Promise.all(actorUuids.map((u) => getActor(u))) : [...(game.actors.party?.members ?? [])];
+    if (!actors.length) throw new Error("No characters to award XP to. Add them to the PF2e Party in the Actors tab, or give actorUuids.");
+    const rows = [];
+    for (const a of actors) {
+      if (a.type !== "character") {
+        rows.push({ name: a.name, skipped: "only player characters track XP" });
+        continue;
+      }
+      const data = a.system?.details?.xp ?? {};
+      const before = Number(data.value ?? 0);
+      const max = Number(data.max ?? 1000);
+      const after = Math.max(0, before + xp);
+      if (!dryRun) {
+        await a.update({
+          "system.details.xp.value": after,
+          [`flags.${MODULE_ID}.xpLog`]: addXpLog(a.flags?.[MODULE_ID]?.xpLog, session, after - before, reason, Date.now()),
+        });
+      }
+      rows.push({ name: a.name, uuid: a.uuid, level: levelOf(a), before, after, readyToLevelUp: after >= max || undefined });
+    }
+    return {
+      dryRun: dryRun || undefined,
+      xp,
+      reason,
+      characters: rows,
+      note: dryRun
+        ? "Nothing changed yet. Call again with dryRun: false to award it."
+        : "XP isn't removed by cleanup_session; session_log lists it, and a negative award takes it back.",
+    };
+  },
+
+  async "treasure.candidates"({ levels, rarities = ["common"], limitPerLevel = 150 }) {
+    requirePf2e();
+    const want = new Set(levels);
+    const okRarity = new Set(rarities);
+    const counts = new Map();
+    const out = [];
+    const packs = game.packs.filter((p) => p.documentName === "Item");
+    // Official packs first, so the per-level cap never crowds them out.
+    packs.sort((a, b) => isOfficialPack(b) - isOfficialPack(a));
+    for (const p of packs) {
+      const official = isOfficialPack(p);
+      const index = await p.getIndex({ fields: ["system.level.value", "system.traits.rarity", "system.traits.value", "system.price.value", "system.price.per"] });
+      for (const e of index) {
+        const kind = PERMANENT_TYPES.has(e.type) ? "permanent" : CONSUMABLE_TYPES.has(e.type) ? "consumable" : null;
+        const level = e.system?.level?.value;
+        if (!kind || !want.has(level)) continue;
+        if (!okRarity.has(e.system?.traits?.rarity ?? "common")) continue;
+        if ((e.system?.traits?.value ?? []).some((t) => SKIP_TREASURE_TRAITS.has(t))) continue;
+        const key = `${kind}|${level}|${official}`;
+        const n = counts.get(key) ?? 0;
+        if (n >= limitPerLevel) continue;
+        counts.set(key, n + 1);
+        out.push({
+          uuid: e.uuid ?? `Compendium.${p.collection}.Item.${e._id}`,
+          name: e.name,
+          type: e.type,
+          kind,
+          level,
+          price: { ...(e.system?.price?.value ?? {}), per: e.system?.price?.per },
+          official,
+          pack: p.title,
+        });
+      }
+    }
+    return { candidates: out };
+  },
+
+  async "treasure.give"({ recipient = "party", lootActorName, folder, items = [], coins = {} }) {
+    requirePf2e();
+    let target;
+    let lootActor;
+    if (lootActorName) {
+      target = await createTagged(Actor.implementation, { name: lootActorName, type: "loot", folder: await getFolderId(folder, "Actor") });
+      lootActor = target.uuid;
+    } else if (recipient === "party") {
+      target = game.actors.party;
+      if (!target) throw new Error("This world has no PF2e Party. Give a character's actor UUID as the recipient, or a lootActorName.");
+    } else {
+      target = await getActor(recipient);
+    }
+
+    const data = [];
+    const notFound = [];
+    for (const { uuid, quantity = 1 } of items) {
+      const it = await fromUuid(uuid);
+      if (!it || it.documentName !== "Item") {
+        notFound.push(uuid);
+        continue;
+      }
+      const d = it.toObject();
+      delete d._id;
+      if (d.system && "quantity" in d.system) d.system.quantity = quantity;
+      data.push(d);
+    }
+
+    // Coins as their own tagged stacks, so cleanup can take them back.
+    let untrackedCoins;
+    for (const denom of Object.keys(COIN_NAMES)) {
+      const n = coins[denom];
+      if (!(n > 0)) continue;
+      const src = await findCoin(denom);
+      if (src) {
+        const d = src.toObject();
+        delete d._id;
+        d.system.quantity = n;
+        data.push(d);
+      } else (untrackedCoins ??= {})[denom] = n;
+    }
+
+    const created = data.length ? await embedTagged(target, "Item", data) : [];
+    if (untrackedCoins) {
+      if (typeof target.inventory?.addCoins !== "function") throw new Error("Couldn't find the PF2e coin items to give currency.");
+      await target.inventory.addCoins(untrackedCoins);
+    }
+    return {
+      givenTo: target.name,
+      recipientUuid: target.uuid,
+      lootActor,
+      given: created.map((i) => ({ name: i.name, quantity: i.system?.quantity, uuid: i.uuid })),
+      notFound: notFound.length ? notFound : undefined,
+      untrackedCoins: untrackedCoins ? { ...untrackedCoins, note: "added to the existing coins; cleanup_session can't take these back" } : undefined,
+    };
+  },
+
   // ---------- session log ----------
 
   async "session.start"({ name }) {
@@ -1415,6 +1584,7 @@ export const handlers = {
     const entries = scanTagged((tag) => matchesSession(tag, ref, session.id));
     const sessions = summarizeSessions(entries, session.id).map(formatSession);
     if (ref === "all") return { current: sessionInfo(session), sessions };
+    const xp = xpAwards(ref);
     const named = entries.filter((e) => !COUNTED_TYPES.has(e.type));
     const counted = {};
     for (const e of entries.filter((x) => COUNTED_TYPES.has(x.type))) {
@@ -1428,7 +1598,8 @@ export const handlers = {
       documents: named.slice(0, limit).map(brief),
       more: named.length > limit ? named.length - limit : undefined,
       mapPieces: Object.keys(counted).length ? counted : undefined,
-      note: entries.length ? undefined : `Nothing tagged for "${ref}". Things made before session tagging (module v0.3.0) aren't tracked.`,
+      xpAwards: xp.length ? xp : undefined,
+      note: entries.length || xp.length ? undefined : `Nothing tagged for "${ref}". Things made before session tagging (module v0.3.0) aren't tracked.`,
     };
   },
 
@@ -1438,7 +1609,10 @@ export const handlers = {
     if (!entries.length) return { found: 0, note: `Nothing tagged for "${ref}". Use session_log with session 'all' to see the sessions.` };
     const plan = planCleanup(entries, { includeCharacterItems });
     const sessions = summarizeSessions(entries, session.id).map(formatSession);
-    const notTracked = "Uploaded files and chat messages are not removed.";
+    const xp = xpAwards(ref);
+    const notTracked =
+      "Uploaded files and chat messages are not removed." +
+      (xp.length ? " XP awarded in this session stays (see xpNotUndone); take it back with a negative award_xp if the GM wants." : "");
     if (confirm !== true) {
       return {
         preview: true,
@@ -1446,6 +1620,7 @@ export const handlers = {
         willDelete: describePlan(plan),
         kept: plan.kept.length ? plan.kept : undefined,
         notTracked,
+        xpNotUndone: xp.length ? xp : undefined,
         next: "Nothing deleted yet. Show this to the GM, and call again with confirm: true only if they say yes.",
       };
     }
@@ -1510,6 +1685,7 @@ export const handlers = {
       kept: kept.length ? kept : undefined,
       errors: errors.length ? errors : undefined,
       notTracked,
+      xpNotUndone: xp.length ? xp : undefined,
     };
   },
 

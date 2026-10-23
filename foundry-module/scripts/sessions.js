@@ -123,3 +123,23 @@ export function describePlan(plan) {
   for (const [k, n] of Object.entries(counted)) add("Walls, lights and drawings", `${n} ${k}`);
   return groups;
 }
+
+// XP isn't a document, so it can't be tagged or deleted. Each character keeps a short log of the XP
+// Claude awarded, so session_log can show it and the GM can take it back by hand.
+export const XP_LOG_MAX = 50;
+
+export function addXpLog(log, session, xp, reason, now) {
+  const entry = { session: session.id, sessionName: session.name, xp, reason: reason || undefined, at: now };
+  return [...(Array.isArray(log) ? log : []), entry].slice(-XP_LOG_MAX);
+}
+
+// actors: [{ name, uuid, log }]. Returns the awards that match a session ref, newest first.
+export function xpAwardsFor(actors, ref, currentId) {
+  const out = [];
+  for (const a of actors) {
+    for (const e of Array.isArray(a.log) ? a.log : []) {
+      if (e?.session && matchesSession(e, ref, currentId)) out.push({ actor: a.name, uuid: a.uuid, xp: e.xp, reason: e.reason, session: e.sessionName, at: e.at });
+    }
+  }
+  return out.sort((x, y) => y.at - x.at);
+}

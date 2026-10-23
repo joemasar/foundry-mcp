@@ -4,7 +4,18 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { FoundryBridge } from "./bridge.js";
 import { buildLayout } from "./mapLayout.js";
-import { DIFFICULTIES, budgetFor, evaluateEncounter, pickEncounter, type Difficulty } from "./encounter.js";
+import { DIFFICULTIES, budgetFor, evaluateEncounter, pickEncounter, seededRandom, type Difficulty } from "./encounter.js";
+import {
+  ACCOMPLISHMENT_XP,
+  coinsFromGp,
+  encounterAward,
+  pickTreasure,
+  planTreasure,
+  priceInGp,
+  type Accomplishment,
+  type ItemKind,
+  type TreasureCandidate,
+} from "./rewards.js";
 
 const MAX_TEXT = 60_000;
 
@@ -937,6 +948,153 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     },
   );
 
+  // ---------- Rewards ----------
+
+  server.registerTool(
+    "award_xp",
+    {
+      title: "Award XP",
+      description:
+        "Give PF2e experience points to the party (every character in the PF2e Party) or to chosen characters. Give xp directly, an accomplishment (minor 10, moderate 30, major 80), and/or the creatures defeated, which are worked out with the PF2e rules (always the award for a group of four, whatever the party size). Use dryRun to show the GM the before and after first. Characters reaching 1000 XP are flagged as ready to level up.",
+      inputSchema: {
+        xp: z.number().int().optional().describe("XP for each character. Negative takes XP back (e.g. to undo an award)."),
+        accomplishment: z.enum(["minor", "moderate", "major"]).optional(),
+        creatures: z
+          .array(z.object({ name: z.string(), level: z.number().int(), count: z.number().int().min(1).default(1), adjustment: z.enum(["elite", "weak"]).optional() }))
+          .optional()
+          .describe("Creatures the party defeated; their XP is added."),
+        reason: z.string().optional().describe("Shown in the session log and the chat note, e.g. 'Crypt Ambush'."),
+        actorUuids: z.array(z.string()).optional().describe("Only these characters. Leave out for the whole PF2e Party."),
+        partyLevel: z.number().int().min(1).max(20).optional(),
+        partySize: z.number().int().min(1).max(10).optional(),
+        announce: z.boolean().default(false).describe("Post a public chat message about the award. Only if the GM asked."),
+        dryRun: z.boolean().default(false),
+      },
+    },
+    async (args) => {
+      try {
+        if (args.xp === undefined && !args.accomplishment && !args.creatures?.length) throw new Error("Give xp, an accomplishment, or the creatures defeated.");
+        const parts: Record<string, number> = {};
+        if (args.xp !== undefined) parts.given = args.xp;
+        if (args.accomplishment) parts[`${args.accomplishment} accomplishment`] = ACCOMPLISHMENT_XP[args.accomplishment as Accomplishment];
+        let encounter;
+        if (args.creatures?.length) {
+          const party = await partyInfo(args.partyLevel, args.partySize);
+          const e = evaluateEncounter(args.creatures, party.level, party.size);
+          parts.encounter = encounterAward(e.totalXp, party.size);
+          encounter = { totalXp: e.totalXp, partyLevel: party.level, partySize: party.size, difficulty: e.difficulty };
+        }
+        const xp = Object.values(parts).reduce((a, b) => a + b, 0);
+        if (xp === 0) throw new Error("That adds up to 0 XP.");
+        const result = await bridge.request<Record<string, unknown>>("pf2e.awardXp", { actorUuids: args.actorUuids, xp, reason: args.reason, dryRun: args.dryRun });
+        if (args.announce && !args.dryRun) {
+          await bridge.request("chat.send", { content: `<p>The party gains <strong>${xp} XP</strong>${args.reason ? ` for ${args.reason}` : ""}.</p>` });
+        }
+        return text({ ...result, breakdown: parts, encounter });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  const itemList = z.array(z.object({ uuid: z.string(), quantity: z.number().int().min(1).default(1) }));
+
+  server.registerTool(
+    "give_treasure",
+    {
+      title: "Give treasure",
+      description:
+        "Hand out PF2e treasure that fits the party's level with the GM Core 'Party Treasure by Level' table: permanent items, consumables and coins, picked at random from the official compendiums (homebrew only when nothing official fits). Give a share of the level's treasure (0.25 = a quarter, about one big fight's worth) or a gp budget. It previews by default: show the GM the picks, then call again with dryRun: false and the preview's items and coins to give exactly those. Goes to the PF2e Party's stash, a character, or a new loot actor (lootActorName) the GM can place on a map.",
+      inputSchema: {
+        share: z.number().gt(0).max(2).optional().describe("Share of the party level's treasure to give, default 0.25."),
+        budgetGp: z.number().positive().optional().describe("Instead of share: about this many gp worth."),
+        partyLevel: z.number().int().min(1).max(20).optional(),
+        partySize: z.number().int().min(1).max(10).optional(),
+        permanent: z.boolean().default(true).describe("Include permanent items."),
+        consumables: z.boolean().default(true).describe("Include consumables."),
+        currency: z.boolean().default(true).describe("Include coins."),
+        uncommon: z.boolean().default(false).describe("Also pick uncommon items. Rare and unique items are never picked."),
+        recipient: z.string().default("party").describe("'party' for the PF2e Party stash, or a character's actor UUID."),
+        lootActorName: z.string().optional().describe("Instead of a recipient: create a loot actor with this name (e.g. 'Ogre's Hoard') holding the treasure."),
+        folder: folderRef,
+        items: itemList.optional().describe("Give exactly these items (from a preview) instead of picking."),
+        coins: z
+          .object({ pp: z.number().int().min(0).optional(), gp: z.number().int().min(0).optional(), sp: z.number().int().min(0).optional(), cp: z.number().int().min(0).optional() })
+          .optional()
+          .describe("Give exactly these coins (from a preview)."),
+        seed: z.number().int().optional().describe("Repeat the same random picks."),
+        dryRun: z.boolean().default(true).describe("true (default) only previews; false gives the treasure."),
+      },
+    },
+    async (args) => {
+      try {
+        const give = (items: { uuid: string; quantity: number }[], coins: Record<string, number | undefined>) =>
+          bridge.request<Record<string, unknown>>(
+            "treasure.give",
+            { recipient: args.recipient, lootActorName: args.lootActorName, folder: args.folder, items, coins },
+            120_000,
+          );
+
+        // Exact items and coins, usually from a preview.
+        if (args.items || args.coins) {
+          if (args.dryRun) return text({ dryRun: true, wouldGive: { items: args.items ?? [], coins: args.coins ?? {} }, next: "Call again with dryRun: false to give these." });
+          return text(await give(args.items ?? [], args.coins ?? {}));
+        }
+
+        const party = await partyInfo(args.partyLevel, args.partySize);
+        const seed = args.seed ?? Math.floor(Math.random() * 2 ** 31);
+        const random = seededRandom(seed);
+        const plan = planTreasure(party.level, party.size, {
+          share: args.share,
+          budgetGp: args.budgetGp,
+          permanent: args.permanent,
+          consumables: args.consumables,
+          currency: args.currency,
+          random,
+        });
+        const levels = [...new Set([...plan.permanent, ...plan.consumables].map((s) => s.level))];
+        let candidates: TreasureCandidate[] = [];
+        if (levels.length) {
+          // Up to three levels lower too, in case a level has nothing that fits.
+          const all = [...new Set(levels.flatMap((l) => Array.from({ length: Math.min(l, 4) }, (_, i) => l - i)))];
+          const r = await bridge.request<{ candidates: { uuid: string; name: string; level: number; kind: ItemKind; price: any; official: boolean }[] }>(
+            "treasure.candidates",
+            { levels: all, rarities: args.uncommon ? ["common", "uncommon"] : ["common"] },
+            120_000,
+          );
+          candidates = r.candidates
+            .map((c) => ({ uuid: c.uuid, name: c.name, level: c.level, kind: c.kind, priceGp: priceInGp(c.price), official: c.official }))
+            .filter((c) => c.priceGp > 0);
+        }
+        const { picks, unfilled, itemsValueGp } = pickTreasure(plan, candidates, random);
+        const coins = coinsFromGp(plan.currencyGp);
+        const items = picks.map((p) => ({ uuid: p.uuid, quantity: p.quantity }));
+        const summary = {
+          party: { level: party.level, size: party.size },
+          share: plan.share,
+          targetValueGp: plan.approxValueGp,
+          itemsValueGp,
+          coins,
+          totalValueGp: Math.round((itemsValueGp + plan.currencyGp) * 100) / 100,
+          picks: picks.map((p) => ({ name: p.name, uuid: p.uuid, kind: p.kind, level: p.level, quantity: p.quantity, priceGp: p.priceGp, homebrew: p.official ? undefined : true })),
+          unfilled: unfilled.length ? unfilled : undefined,
+          seed,
+        };
+        if (args.dryRun) {
+          return text({
+            dryRun: true,
+            ...summary,
+            next: "Nothing given yet. Show the GM; to give exactly this, call again with dryRun: false and these items and coins.",
+            items,
+          });
+        }
+        return text({ ...summary, ...(await give(items, coins)) });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
   // ---------- Session log ----------
 
   const sessionRef = z
@@ -961,7 +1119,7 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     {
       title: "What Claude made",
       description:
-        "List what Claude created in a session: actors, items, journals, scenes, tables, folders, combats, plus tokens, walls, lights and pins it added to existing scenes, and items it gave to characters. Use session 'all' for an overview of every session with counts.",
+        "List what Claude created in a session: actors, items, journals, scenes, tables, folders, combats, plus tokens, walls, lights and pins it added to existing scenes, items it gave to characters or the party, and XP it awarded. Use session 'all' for an overview of every session with counts.",
       inputSchema: {
         session: z.union([z.literal("all"), sessionRef]).default("current"),
         limit: z.number().int().min(1).max(500).default(200),
@@ -976,7 +1134,7 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     {
       title: "Clean up a session",
       description:
-        "Delete everything Claude created in a session. Without confirm it only previews: show the GM the list and get a yes before calling again with confirm: true. Keeps the active scene, folders that still hold other things, and items on player characters (unless includeCharacterItems). Uploaded files and chat messages stay.",
+        "Delete everything Claude created in a session. Without confirm it only previews: show the GM the list and get a yes before calling again with confirm: true. Keeps the active scene, folders that still hold other things, and items on player characters or in the party stash (unless includeCharacterItems). XP, uploaded files and chat messages stay.",
       inputSchema: {
         session: z.union([z.literal("all"), sessionRef]),
         confirm: z.boolean().default(false).describe("false previews; true deletes. Only true after the GM agreed to the preview."),

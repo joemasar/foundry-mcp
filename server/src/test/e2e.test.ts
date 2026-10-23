@@ -27,7 +27,7 @@ test("tools work end to end through a fake Foundry client", async (t) => {
 
   const { tools } = await client.listTools();
   const names = tools.map((x) => x.name);
-  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session"]) {
+  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session", "award_xp", "give_treasure"]) {
     assert.ok(names.includes(n), `missing tool ${n}`);
   }
 
@@ -120,6 +120,24 @@ test("tools work end to end through a fake Foundry client", async (t) => {
   assert.equal(preview.params.confirm, false);
   const noSession = await client.callTool({ name: "cleanup_session", arguments: {} });
   assert.equal(noSession.isError, true, "cleanup needs a session");
+
+  // Rewards: XP adds up the parts; treasure previews by default and gives exact items on dryRun false.
+  const xp = JSON.parse(
+    textOf(await client.callTool({ name: "award_xp", arguments: { xp: 20, accomplishment: "moderate", reason: "Rescue", dryRun: true } })),
+  );
+  assert.equal(xp.action, "pf2e.awardXp");
+  assert.equal(xp.params.xp, 50);
+  assert.equal(xp.params.dryRun, true);
+  const noXp = await client.callTool({ name: "award_xp", arguments: {} });
+  assert.equal(noXp.isError, true);
+  const items = [{ uuid: "Compendium.pf2e.equipment-srd.Item.x", quantity: 2 }];
+  const treasurePreview = JSON.parse(textOf(await client.callTool({ name: "give_treasure", arguments: { items, coins: { gp: 30 } } })));
+  assert.equal(treasurePreview.dryRun, true, "nothing is sent to Foundry on a preview");
+  const given = JSON.parse(textOf(await client.callTool({ name: "give_treasure", arguments: { items, coins: { gp: 30 }, dryRun: false } })));
+  assert.equal(given.action, "treasure.give");
+  assert.equal(given.params.recipient, "party");
+  assert.deepEqual(given.params.items, items);
+  assert.equal(given.params.coins.gp, 30);
 
   // Bad input is caught by the schema before reaching Foundry.
   const invalid = await client.callTool({ name: "delete_document", arguments: { uuid: "Actor.x", confirm: false } });
