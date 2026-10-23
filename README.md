@@ -85,7 +85,10 @@ Ask Claude things like:
 | Items | `create_pf2e_item` |
 | Story | `create_journal`, `add_journal_page`, `show_journal_to_players`, `create_roll_table` |
 | Maps | `upload_asset`, `create_scene`, `build_map_layout`, `add_walls`, `add_lights`, `add_map_notes`, `place_tokens`, `scene_control` |
-| Table | `start_encounter`, `roll`, `send_chat` |
+| Encounters | `evaluate_encounter` (PF2e XP difficulty), `build_encounter` (pick, import, place, journal), `start_encounter` |
+| Tokens | `move_tokens`, `set_token_state` (reveal, hide, rename, remove), `damage_or_heal`, `set_conditions` |
+| Combat | `combat_status`, `combat_control` (turns, rounds, add, remove, defeated, initiative, end) |
+| Table | `read_chat`, `roll`, `send_chat` |
 | Escape hatch | `run_script` (off by default) |
 
 Grid positions are squares counted from the top-left of the map, starting at 0.

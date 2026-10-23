@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { FoundryBridge } from "./bridge.js";
 import { buildLayout } from "./mapLayout.js";
+import { DIFFICULTIES, budgetFor, evaluateEncounter, pickEncounter, spreadPositions, type Difficulty } from "./encounter.js";
 
 const MAX_TEXT = 60_000;
 
@@ -646,6 +647,292 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
       },
     },
     (args) => call("folder.create", args),
+  );
+
+  // ---------- Live table: tokens ----------
+
+  const tokenRefs = z
+    .array(z.string())
+    .min(1)
+    .describe("Token names or IDs. A name also matches numbered copies: 'Goblin Pyro' finds 'Goblin Pyro 1' and 'Goblin Pyro 2'.");
+
+  server.registerTool(
+    "move_tokens",
+    {
+      title: "Move tokens",
+      description: "Move tokens to grid squares (column, row from the top-left). Moves ignore walls, so check the map makes sense.",
+      inputSchema: {
+        sceneUuid: sceneRef,
+        moves: z.array(z.object({ token: z.string().describe("Exact token name or ID"), x: z.number(), y: z.number() })).min(1),
+      },
+    },
+    (args) => call("tokens.move", args),
+  );
+
+  server.registerTool(
+    "set_token_state",
+    {
+      title: "Reveal, hide, rename or remove tokens",
+      description: "Reveal hidden tokens (spring the ambush), hide them again, rename them, or remove them from the map. Hiding or revealing also updates them in a running combat.",
+      inputSchema: {
+        sceneUuid: sceneRef,
+        tokens: tokenRefs,
+        action: z.enum(["reveal", "hide", "rename", "remove"]),
+        name: z.string().optional().describe("New name for 'rename'. Several tokens get numbered."),
+      },
+    },
+    (args) => call("tokens.state", args),
+  );
+
+  server.registerTool(
+    "damage_or_heal",
+    {
+      title: "Damage or heal",
+      description:
+        "Change hit points on tokens. In PF2e, damage goes through the system: temporary HP are used first, resistances/weaknesses/immunities apply when you give a damage type, and creatures at 0 HP are knocked out or killed by the usual rules. Use mode 'set' to set HP to an exact number.",
+      inputSchema: {
+        sceneUuid: sceneRef,
+        tokens: tokenRefs,
+        mode: z.enum(["damage", "heal", "set"]),
+        amount: z.number().int().min(0),
+        damageType: z.string().optional().describe("PF2e damage type for damage, e.g. 'fire', 'slashing', 'void'."),
+      },
+    },
+    (args) => call("tokens.hp", args),
+  );
+
+  server.registerTool(
+    "set_conditions",
+    {
+      title: "Add or remove conditions",
+      description: "Add or remove conditions on tokens: frightened 1, prone, off-guard, grabbed, slowed 1, stunned 2, dying, persistent damage is not covered. Valued conditions take a value; adding one that is already there sets it to the new value.",
+      inputSchema: {
+        sceneUuid: sceneRef,
+        tokens: tokenRefs,
+        add: z
+          .array(z.object({ slug: z.string().describe("PF2e condition slug: frightened, off-guard, prone, grabbed, restrained, slowed, stunned, sickened, clumsy, enfeebled, drained, stupefied, blinded, dazzled, deafened, fatigued, hidden, unconscious, wounded, dying, doomed, quickened, confused, fleeing, paralyzed, petrified, controlled, immobilized, invisible, concealed, undetected, encumbered..."), value: z.number().int().min(1).optional() }))
+          .optional(),
+        remove: z.array(z.string()).optional().describe("Condition slugs to remove completely."),
+      },
+    },
+    (args) => call("tokens.conditions", args),
+  );
+
+  // ---------- Live table: combat ----------
+
+  server.registerTool(
+    "combat_status",
+    {
+      title: "Combat status",
+      description: "See the running combat: round, whose turn it is, and every combatant's initiative, HP, AC and conditions.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    () => call("combat.status"),
+  );
+
+  server.registerTool(
+    "combat_control",
+    {
+      title: "Run combat",
+      description:
+        "Drive the running combat: start, next_turn, previous_turn, next_round, end (deletes the combat; ask the GM first), add tokens (NPC initiative is rolled), remove tokens, mark tokens defeated, or roll_initiative (for the named tokens, or everyone who has not rolled). Returns the updated turn order.",
+      inputSchema: {
+        action: z.enum(["start", "next_turn", "previous_turn", "next_round", "end", "add", "remove", "defeated", "roll_initiative"]),
+        tokens: z.array(z.string()).optional().describe("Token names or IDs, for add, remove, defeated and roll_initiative."),
+        sceneUuid: sceneRef,
+      },
+    },
+    (args) => call("combat.control", args),
+  );
+
+  // ---------- Live table: chat ----------
+
+  server.registerTool(
+    "read_chat",
+    {
+      title: "Read the chat log",
+      description:
+        "Read recent chat messages: who said or rolled what, roll totals, and for PF2e checks the type, DC, target and outcome (success, failure, critical success...). Use it to catch up on what just happened at the table.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(100).default(20),
+        rollsOnly: z.boolean().default(false),
+        includeWhispers: z.boolean().default(true),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    (args) => call("chat.read", args),
+  );
+
+  // ---------- Encounters ----------
+
+  async function partyInfo(level?: number, size?: number) {
+    if (level !== undefined && size !== undefined) return { level, size, members: undefined as unknown };
+    const party = await bridge.request<{ party: string | null; members: { name: string; level?: number }[] }>("pf2e.party");
+    const levels = party.members.map((m) => m.level).filter((n): n is number => typeof n === "number");
+    if (!levels.length) {
+      throw new Error("No PF2e Party with members found in this world. Give partyLevel and partySize, or add the characters to the Party in the Actors tab.");
+    }
+    return {
+      level: level ?? Math.round(levels.reduce((a, b) => a + b, 0) / levels.length),
+      size: size ?? levels.length,
+      members: party.members,
+    };
+  }
+
+  server.registerTool(
+    "evaluate_encounter",
+    {
+      title: "Rate an encounter",
+      description:
+        "Rate how hard a fight is with the PF2e XP rules (trivial, low, moderate, severe, extreme). Give a list of creatures, or leave it out to rate the hostile creatures on a scene. Party level and size come from the PF2e Party unless you give them.",
+      inputSchema: {
+        creatures: z
+          .array(z.object({ name: z.string(), level: z.number().int(), count: z.number().int().min(1).default(1), adjustment: z.enum(["elite", "weak"]).optional() }))
+          .optional(),
+        sceneUuid: sceneRef,
+        partyLevel: z.number().int().min(1).max(20).optional(),
+        partySize: z.number().int().min(1).max(10).optional(),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => {
+      try {
+        const party = await partyInfo(args.partyLevel, args.partySize);
+        let creatures = args.creatures;
+        let scene: string | undefined;
+        if (!creatures) {
+          const r = await bridge.request<{ scene: string; creatures: { name: string; level: number; adjustment: "elite" | "weak" | null }[] }>(
+            "encounter.sceneCreatures",
+            { sceneUuid: args.sceneUuid },
+          );
+          scene = r.scene;
+          creatures = r.creatures.map((c) => ({ ...c, count: 1, adjustment: c.adjustment ?? undefined }));
+          if (!creatures.length) throw new Error(`No hostile creatures on "${r.scene}".`);
+        }
+        return text({ scene, partyMembers: party.members, ...evaluateEncounter(creatures, party.level, party.size) });
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "build_encounter",
+    {
+      title: "Build an encounter",
+      description:
+        "Build a balanced PF2e fight in one step. Either give the creatures (compendium UUIDs and counts) or describe a theme (traits and/or name words) and let it pick creatures that fit the XP budget for the difficulty. It imports them, can place them on a scene inside an area, and writes a GM journal with the stat links and XP math. Use dryRun to preview the picks first.",
+      inputSchema: {
+        name: z.string().describe("Encounter name, e.g. 'Crypt Ambush'."),
+        difficulty: z.enum(DIFFICULTIES as [Difficulty, ...Difficulty[]]).default("moderate"),
+        creatures: z
+          .array(z.object({ uuid: z.string(), count: z.number().int().min(1).default(1) }))
+          .optional()
+          .describe("Exact creatures to use. Leave out to auto-pick from the theme."),
+        traits: z.array(z.string()).optional().describe("Theme for auto-pick: every creature must have these traits, e.g. ['undead'] or ['goblin']."),
+        query: z.string().optional().describe("Theme for auto-pick: words in the creature name, e.g. 'skeleton'."),
+        pack: z.string().optional().describe("Only pick from packs matching this, e.g. 'monster-core'."),
+        maxTypes: z.number().int().min(1).max(6).default(3).describe("Most different kinds of creature to auto-pick."),
+        partyLevel: z.number().int().min(1).max(20).optional(),
+        partySize: z.number().int().min(1).max(10).optional(),
+        sceneUuid: z.string().optional().describe("Place the creatures on this scene. Leave out to only import them."),
+        area: z
+          .object({ x: z.number().int(), y: z.number().int(), w: z.number().int().min(1), h: z.number().int().min(1) })
+          .optional()
+          .describe("Grid area to place tokens in. Required with sceneUuid."),
+        hidden: z.boolean().default(true).describe("Place tokens hidden (default) so players don't see them until revealed."),
+        folder: z.string().optional().describe("Folder for the creatures and journal. Defaults to the encounter name."),
+        journal: z.boolean().default(true),
+        dryRun: z.boolean().default(false),
+      },
+    },
+    async (args) => {
+      try {
+        const party = await partyInfo(args.partyLevel, args.partySize);
+        type Chosen = { uuid: string; name: string; level: number; count: number };
+        let chosen: Chosen[];
+
+        if (args.creatures?.length) {
+          chosen = [];
+          for (const c of args.creatures) {
+            const doc = await bridge.request<{ name: string; level: number; type: string }>("get", { uuid: c.uuid });
+            chosen.push({ uuid: c.uuid, name: doc.name, level: doc.level, count: c.count });
+          }
+        } else {
+          if (!args.traits?.length && !args.query) throw new Error("Give creatures, or a theme with traits or query.");
+          const search = await bridge.request<{ results: { uuid: string; name: string; level: number; rarity?: string; type: string }[] }>(
+            "compendium.search",
+            {
+              query: args.query ?? "",
+              documentType: "Actor",
+              subtype: "npc",
+              traits: args.traits,
+              pack: args.pack,
+              minLevel: party.level - 4,
+              maxLevel: party.level + 4,
+              limit: 200,
+            },
+            120_000,
+          );
+          const candidates = search.results.filter((r) => typeof r.level === "number" && r.rarity !== "unique");
+          if (!candidates.length) throw new Error("No creatures match that theme near the party's level.");
+          // Avoid near-duplicate stat blocks from different books with the same name.
+          const byName = new Map<string, (typeof candidates)[number]>();
+          for (const c of candidates) if (!byName.has(c.name)) byName.set(c.name, c);
+          const { picks } = pickEncounter([...byName.values()], party.level, party.size, args.difficulty, { maxTypes: args.maxTypes });
+          if (!picks.length) throw new Error("Couldn't fit any matching creature into the budget.");
+          chosen = picks.map((p) => ({ uuid: p.uuid, name: p.name, level: p.level, count: p.count }));
+        }
+
+        const evaluation = evaluateEncounter(chosen, party.level, party.size);
+        const budget = budgetFor(args.difficulty, party.size);
+        if (args.dryRun) return text({ dryRun: true, target: args.difficulty, budget, picks: chosen, evaluation });
+
+        const folder = args.folder ?? args.name;
+        const total = chosen.reduce((n, c) => n + c.count, 0);
+        if (args.sceneUuid && !args.area) throw new Error("Give an area to place the creatures in.");
+        const positions = args.sceneUuid && args.area ? spreadPositions(args.area, total) : [];
+
+        const created: { name: string; actorUuid: string; count: number; level: number; tokens?: string[] }[] = [];
+        let posIndex = 0;
+        for (const c of chosen) {
+          const imp = await bridge.request<{ created: { uuid: string; name: string }[] }>("compendium.import", { uuid: c.uuid, folder });
+          const actorUuid = imp.created[0].uuid;
+          const row: (typeof created)[number] = { name: c.name, actorUuid, count: c.count, level: c.level };
+          if (args.sceneUuid) {
+            const placed = await bridge.request<{ tokens: { name: string }[] }>("scene.placeTokens", {
+              sceneUuid: args.sceneUuid,
+              actorUuid,
+              positions: positions.slice(posIndex, posIndex + c.count),
+              count: c.count,
+              hidden: args.hidden,
+            });
+            row.tokens = placed.tokens.map((t) => t.name);
+            posIndex += c.count;
+          }
+          created.push(row);
+        }
+
+        let journalUuid: string | undefined;
+        if (args.journal) {
+          const rows = created
+            .map((c) => `<tr><td>@UUID[${c.actorUuid}]{${c.name}}</td><td>${c.level}</td><td>${c.count}</td></tr>`)
+            .join("");
+          const html =
+            `<p><strong>${evaluation.difficulty[0].toUpperCase() + evaluation.difficulty.slice(1)}</strong> for ${party.size} characters of level ${party.level}: ${evaluation.totalXp} XP (target ${args.difficulty}, budget ${budget}).</p>` +
+            `<table><thead><tr><th>Creature</th><th>Level</th><th>Count</th></tr></thead><tbody>${rows}</tbody></table>` +
+            (args.sceneUuid ? `<p>Placed on @UUID[${args.sceneUuid}]{the map}${args.hidden ? ", hidden" : ""}.</p>` : "") +
+            (evaluation.warnings.length ? `<p><strong>Watch out:</strong> ${evaluation.warnings.join(" ")}</p>` : "");
+          const j = await bridge.request<{ uuid: string }>("journal.create", { name: `Encounter: ${args.name}`, folder, pages: [{ title: "Encounter", content: html }] });
+          journalUuid = j.uuid;
+        }
+
+        return text({ encounter: args.name, folder, created, journalUuid, evaluation });
+      } catch (err) {
+        return fail(err);
+      }
+    },
   );
 
   server.registerTool(

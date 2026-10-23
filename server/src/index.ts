@@ -29,7 +29,7 @@ const bridge = new FoundryBridge(HOST, PORT, token);
 bridge.start();
 
 const server = new McpServer(
-  { name: "foundry-vtt", version: "0.1.0" },
+  { name: "foundry-vtt", version: "0.2.0" },
   {
     instructions: [
       "You are helping a Game Master run a Foundry VTT game, usually Pathfinder 2e, live at the table. Be quick and practical.",

@@ -137,6 +137,108 @@ function backgroundOf(scene) {
   return scene.levels?.contents?.[0]?.background?.src ?? scene.background?.src ?? null;
 }
 
+// Find tokens on a scene by ID or name. A name matches exactly first; otherwise every token whose
+// name starts with it ("Goblin Pyro" finds "Goblin Pyro 1" and "Goblin Pyro 2").
+function findTokens(scene, refs) {
+  if (!refs?.length) throw new Error("Name at least one token.");
+  const all = scene.tokens.contents;
+  const found = new Map();
+  const missing = [];
+  for (const ref of refs) {
+    const r = String(ref).trim();
+    const lower = r.toLowerCase();
+    let hits = all.filter((t) => t.id === r || t.uuid === r);
+    if (!hits.length) hits = all.filter((t) => t.name.toLowerCase() === lower);
+    if (!hits.length) hits = all.filter((t) => t.name.toLowerCase().startsWith(lower));
+    if (!hits.length) missing.push(r);
+    for (const t of hits) found.set(t.id, t);
+  }
+  if (missing.length) {
+    const names = [...new Set(all.map((t) => t.name))].slice(0, 40).join(", ");
+    throw new Error(`No token matching ${missing.map((m) => `"${m}"`).join(", ")} on "${scene.name}". Tokens here: ${names || "none"}.`);
+  }
+  return [...found.values()];
+}
+
+function hpOf(actor) {
+  const hp = actor?.system?.attributes?.hp;
+  if (!hp) return undefined;
+  return `${hp.value}/${hp.max}${hp.temp ? ` (+${hp.temp} temp)` : ""}`;
+}
+
+function conditionsOf(actor) {
+  if (!actor) return [];
+  const active = actor.conditions?.active;
+  if (Array.isArray(active)) return active.map((c) => (c.value ? `${c.slug} ${c.value}` : c.slug));
+  return [...(actor.statuses ?? [])];
+}
+
+function levelOf(actor) {
+  return actor?.level ?? actor?.system?.details?.level?.value ?? actor?.system?.level?.value;
+}
+
+async function changeHp(token, mode, amount, damageType) {
+  const actor = token.actor;
+  const hp = actor?.system?.attributes?.hp;
+  if (!hp) throw new Error(`${token.name} has no hit points.`);
+  const before = hp.value;
+  let note;
+  if (mode === "damage" && typeof actor.applyDamage === "function") {
+    // PF2e: apply through the system so temp HP, resistances/weaknesses, dying and defeat all work.
+    let done = false;
+    if (damageType) {
+      try {
+        const DamageRoll = CONFIG.Dice.rolls.find((R) => R.name === "DamageRoll");
+        if (!DamageRoll) throw new Error("no DamageRoll class");
+        const roll = await new DamageRoll(`(${amount})[${damageType}]`).evaluate();
+        await actor.applyDamage({ damage: roll, token });
+        done = true;
+        note = `${damageType} damage, resistances and weaknesses applied`;
+      } catch (err) {
+        console.warn("foundry-mcp | typed damage failed, applying plain damage", err);
+      }
+    }
+    if (!done) {
+      await actor.applyDamage({ damage: amount, token, skipIWR: true });
+      if (damageType) note = "applied as untyped damage (resistances not checked)";
+    }
+  } else if (mode === "damage") {
+    const temp = hp.temp ?? 0;
+    const fromTemp = Math.min(temp, amount);
+    await actor.update({ "system.attributes.hp.temp": temp - fromTemp, "system.attributes.hp.value": Math.max(0, hp.value - (amount - fromTemp)) });
+  } else if (mode === "heal") {
+    await actor.update({ "system.attributes.hp.value": Math.min(hp.max, hp.value + amount) });
+  } else {
+    await actor.update({ "system.attributes.hp.value": Math.max(0, Math.min(hp.max, amount)) });
+  }
+  const after = actor.system.attributes.hp;
+  return { token: token.name, before, after: after.value, max: after.max, temp: after.temp || undefined, conditions: conditionsOf(actor), note };
+}
+
+function combatSummary(c) {
+  if (!c) return { active: false, note: "No combat is running." };
+  return {
+    active: true,
+    combatId: c.id,
+    scene: c.scene?.name,
+    started: c.started,
+    round: c.round,
+    current: c.combatant?.name ?? null,
+    order: c.turns.map((t, i) => ({
+      tokenId: t.tokenId,
+      name: t.name,
+      initiative: t.initiative,
+      current: i === c.turn && c.started,
+      npc: t.isNPC,
+      hidden: t.hidden || undefined,
+      defeated: t.isDefeated || undefined,
+      hp: hpOf(t.actor),
+      ac: t.actor?.system?.attributes?.ac?.value,
+      conditions: conditionsOf(t.actor),
+    })),
+  };
+}
+
 // ---------- summaries ----------
 
 function summarizeActor(a) {
@@ -288,6 +390,7 @@ export const handlers = {
       world: { id: game.world.id, title: game.world.title },
       system: { id: game.system.id, title: game.system.title, version: game.system.version },
       foundryVersion: game.version,
+      moduleVersion: game.modules.get(MODULE_ID)?.version,
       viewedScene: scene ? { uuid: scene.uuid, name: scene.name } : null,
       activeScene: game.scenes.active ? { uuid: game.scenes.active.uuid, name: game.scenes.active.name } : null,
       users: game.users.map((u) => ({ name: u.name, gm: u.isGM, online: u.active, character: u.character?.name })),
@@ -928,6 +1031,213 @@ export const handlers = {
       color: color ?? null,
     });
     return { id: folder.id, uuid: folder.uuid, name: folder.name };
+  },
+
+  // ---------- tokens ----------
+
+  async "tokens.move"({ sceneUuid, moves }) {
+    const scene = await resolveScene(sceneUuid);
+    const c = converter(scene, "grid");
+    const updates = [];
+    for (const m of moves) {
+      const [t, ...extra] = findTokens(scene, [m.token]);
+      if (extra.length) throw new Error(`"${m.token}" matches ${extra.length + 1} tokens; use the exact name or the token ID.`);
+      updates.push({ _id: t.id, x: c.x(m.x), y: c.y(m.y) });
+    }
+    const done = await scene.updateEmbeddedDocuments("Token", updates);
+    return { scene: scene.name, moved: done.map((t) => ({ name: t.name, ...toGrid(scene, t.x, t.y) })) };
+  },
+
+  async "tokens.state"({ sceneUuid, tokens, action, name }) {
+    const scene = await resolveScene(sceneUuid);
+    const list = findTokens(scene, tokens);
+    const ids = list.map((t) => t.id);
+    if (action === "remove") {
+      await scene.deleteEmbeddedDocuments("Token", ids);
+      return { scene: scene.name, removed: list.map((t) => t.name) };
+    }
+    let updates;
+    if (action === "reveal" || action === "hide") updates = ids.map((_id) => ({ _id, hidden: action === "hide" }));
+    else if (action === "rename") {
+      if (!name) throw new Error("Give the new name.");
+      updates = ids.map((_id, i) => ({ _id, name: ids.length > 1 ? `${name} ${i + 1}` : name }));
+    } else throw new Error(`Unknown action ${action}`);
+    const done = await scene.updateEmbeddedDocuments("Token", updates);
+    // Hidden combatants should follow their tokens.
+    if ((action === "reveal" || action === "hide") && game.combat) {
+      const cUpdates = game.combat.combatants.filter((cb) => ids.includes(cb.tokenId)).map((cb) => ({ _id: cb.id, hidden: action === "hide" }));
+      if (cUpdates.length) await game.combat.updateEmbeddedDocuments("Combatant", cUpdates);
+    }
+    return { scene: scene.name, [action === "rename" ? "renamed" : action === "hide" ? "hidden" : "revealed"]: done.map((t) => t.name) };
+  },
+
+  async "tokens.hp"({ sceneUuid, tokens, mode, amount, damageType }) {
+    const scene = await resolveScene(sceneUuid);
+    const results = [];
+    for (const t of findTokens(scene, tokens)) {
+      try {
+        results.push(await changeHp(t, mode, amount, damageType));
+      } catch (err) {
+        results.push({ token: t.name, error: err.message });
+      }
+    }
+    return { scene: scene.name, results };
+  },
+
+  async "tokens.conditions"({ sceneUuid, tokens, add = [], remove = [] }) {
+    const scene = await resolveScene(sceneUuid);
+    const pf2e = game.system.id === "pf2e";
+    const results = [];
+    for (const t of findTokens(scene, tokens)) {
+      const actor = t.actor;
+      const errors = [];
+      for (const c of add) {
+        try {
+          if (pf2e && actor.increaseCondition) {
+            const manager = game.pf2e?.ConditionManager;
+            if (typeof manager?.getCondition === "function" && !manager.getCondition(c.slug)) throw new Error(`"${c.slug}" is not a PF2e condition`);
+            await actor.increaseCondition(c.slug, c.value ? { value: c.value } : {});
+          } else await actor.toggleStatusEffect(c.slug, { active: true });
+        } catch (err) {
+          errors.push(`${c.slug}: ${err.message}`);
+        }
+      }
+      for (const slug of remove) {
+        try {
+          if (pf2e && actor.decreaseCondition) await actor.decreaseCondition(slug, { forceRemove: true });
+          else await actor.toggleStatusEffect(slug, { active: false });
+        } catch (err) {
+          errors.push(`${slug}: ${err.message}`);
+        }
+      }
+      results.push({ token: t.name, conditions: conditionsOf(actor), errors: errors.length ? errors : undefined });
+    }
+    return { scene: scene.name, results };
+  },
+
+  // ---------- combat ----------
+
+  async "combat.status"() {
+    return combatSummary(game.combat);
+  },
+
+  async "combat.control"({ action, sceneUuid, tokens }) {
+    let combat = game.combat;
+    if (!combat) throw new Error("No combat is running. Use start_encounter first.");
+    switch (action) {
+      case "start":
+        await combat.startCombat();
+        break;
+      case "next_turn":
+        if (!combat.started) await combat.startCombat();
+        else await combat.nextTurn();
+        break;
+      case "previous_turn":
+        await combat.previousTurn();
+        break;
+      case "next_round":
+        await combat.nextRound();
+        break;
+      case "end": {
+        const summary = { ended: true, rounds: combat.round, scene: combat.scene?.name };
+        await combat.delete();
+        return summary;
+      }
+      case "add": {
+        const scene = combat.scene ?? (await resolveScene(sceneUuid));
+        const have = new Set(combat.combatants.map((cb) => cb.tokenId));
+        const list = findTokens(scene, tokens).filter((t) => !have.has(t.id));
+        if (list.length) {
+          const created = await combat.createEmbeddedDocuments(
+            "Combatant",
+            list.map((t) => ({ tokenId: t.id, sceneId: scene.id, actorId: t.actorId, hidden: t.hidden })),
+          );
+          const needRoll = created.filter((cb) => cb.isNPC).map((cb) => cb.id);
+          if (needRoll.length) await combat.rollInitiative(needRoll, { skipDialog: true });
+        }
+        break;
+      }
+      case "remove":
+      case "defeated": {
+        const scene = combat.scene ?? (await resolveScene(sceneUuid));
+        const ids = new Set(findTokens(scene, tokens).map((t) => t.id));
+        const cbs = combat.combatants.filter((cb) => ids.has(cb.tokenId));
+        if (!cbs.length) throw new Error("None of those tokens are in the combat.");
+        if (action === "remove") await combat.deleteEmbeddedDocuments("Combatant", cbs.map((cb) => cb.id));
+        else await combat.updateEmbeddedDocuments("Combatant", cbs.map((cb) => ({ _id: cb.id, defeated: true })));
+        break;
+      }
+      case "roll_initiative": {
+        let ids;
+        if (tokens?.length) {
+          const scene = combat.scene ?? (await resolveScene(sceneUuid));
+          const tIds = new Set(findTokens(scene, tokens).map((t) => t.id));
+          ids = combat.combatants.filter((cb) => tIds.has(cb.tokenId)).map((cb) => cb.id);
+        } else ids = combat.combatants.filter((cb) => cb.initiative === null).map((cb) => cb.id);
+        if (ids.length) await combat.rollInitiative(ids, { skipDialog: true });
+        break;
+      }
+      default:
+        throw new Error(`Unknown combat action ${action}`);
+    }
+    return combatSummary(game.combat);
+  },
+
+  // ---------- chat ----------
+
+  async "chat.read"({ limit = 20, rollsOnly, includeWhispers = true }) {
+    let msgs = game.messages.contents;
+    if (!includeWhispers) msgs = msgs.filter((m) => !m.whisper?.length);
+    if (rollsOnly) msgs = msgs.filter((m) => m.rolls?.length);
+    return {
+      total: game.messages.size,
+      messages: msgs.slice(-limit).map((m) => {
+        const ctx = m.flags?.pf2e?.context;
+        return {
+          time: new Date(m.timestamp).toLocaleTimeString(),
+          speaker: m.speaker?.alias ?? m.author?.name,
+          player: m.author?.name,
+          whisper: m.whisper?.length ? true : undefined,
+          flavor: htmlToText(m.flavor, 300) || undefined,
+          text: htmlToText(m.content, 600) || undefined,
+          rolls: m.rolls?.length ? m.rolls.map((r) => ({ formula: r.formula, total: r.total })) : undefined,
+          check: ctx
+            ? {
+                type: ctx.type,
+                outcome: ctx.outcome ?? undefined,
+                dc: ctx.dc?.value ?? undefined,
+                target: ctx.target?.token ? fromUuidSync(ctx.target.token)?.name : undefined,
+              }
+            : undefined,
+        };
+      }),
+    };
+  },
+
+  // ---------- encounter helpers ----------
+
+  async "pf2e.party"() {
+    const party = game.actors.party;
+    const members = party?.members ?? [];
+    return {
+      party: party?.name ?? null,
+      members: members.map((a) => ({ uuid: a.uuid, name: a.name, level: levelOf(a), hp: hpOf(a) })),
+    };
+  },
+
+  async "encounter.sceneCreatures"({ sceneUuid }) {
+    const scene = await resolveScene(sceneUuid);
+    const friendly = CONST.TOKEN_DISPOSITIONS.FRIENDLY;
+    const creatures = scene.tokens.contents
+      .filter((t) => t.actor && !t.actor.hasPlayerOwner && t.disposition !== friendly)
+      .map((t) => ({
+        name: t.name,
+        level: levelOf(t.actor),
+        adjustment: t.actor.system?.attributes?.adjustment ?? null,
+        hidden: t.hidden || undefined,
+      }))
+      .filter((c) => typeof c.level === "number");
+    return { scene: scene.name, creatures };
   },
 
   async "script.run"({ code }) {
