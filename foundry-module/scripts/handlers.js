@@ -2,6 +2,7 @@
 // plain JSON. Throwing an Error sends its message back to Claude.
 
 import { rankByName, volumeFromSlider } from "./audio.js";
+import { LEGEND, previewOps } from "./preview.js";
 import { COUNTED_TYPES, EMBEDDED, TOP_TYPES, addXpLog, describePlan, isExpired, makeTag, matchesSession, newSession, planCleanup, summarizeSessions, tagOf, xpAwardsFor } from "./sessions.js";
 
 const MODULE_ID = "foundry-mcp";
@@ -471,6 +472,78 @@ function isCharacter(actor) {
 function xpAwards(ref) {
   const actors = game.actors.filter((a) => a.type === "character").map((a) => ({ name: a.name, uuid: a.uuid, log: a.flags?.[MODULE_ID]?.xpLog }));
   return xpAwardsFor(actors, ref, session.id).map((x) => ({ ...x, at: new Date(x.at).toLocaleString() }));
+}
+
+// ---------- map preview helpers ----------
+
+function loadImage(src) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+}
+
+// Paints preview shapes onto a canvas. Images that fail to load are skipped and counted.
+async function paintPreview(plan, { withImages }) {
+  const cv = document.createElement("canvas");
+  cv.width = plan.width;
+  cv.height = plan.height;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#1e1e1e";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  let missingImages = 0;
+  for (const o of plan.ops) {
+    ctx.save();
+    ctx.strokeStyle = o.color;
+    ctx.fillStyle = o.color;
+    ctx.lineWidth = o.width ?? 1;
+    if (o.op === "image") {
+      if (!withImages) {
+        ctx.restore();
+        continue;
+      }
+      const img = await loadImage(o.src);
+      if (img) ctx.drawImage(img, o.x, o.y, o.w, o.h);
+      else missingImages++;
+    } else if (o.op === "line") {
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(o.x1, o.y1);
+      ctx.lineTo(o.x2, o.y2);
+      ctx.stroke();
+    } else if (o.op === "rect") {
+      if (o.dashed) ctx.setLineDash([4, 3]);
+      ctx.globalAlpha = 0.25;
+      ctx.fillRect(o.x, o.y, o.w, o.h);
+      ctx.globalAlpha = 1;
+      ctx.strokeRect(o.x, o.y, o.w, o.h);
+    } else if (o.op === "circle") {
+      ctx.beginPath();
+      ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (o.op === "diamond") {
+      ctx.beginPath();
+      ctx.moveTo(o.x, o.y - o.r);
+      ctx.lineTo(o.x + o.r, o.y);
+      ctx.lineTo(o.x, o.y + o.r);
+      ctx.lineTo(o.x - o.r, o.y);
+      ctx.closePath();
+      ctx.fill();
+    } else if (o.op === "text") {
+      ctx.font = `bold ${o.size}px sans-serif`;
+      ctx.textAlign = o.align ?? "left";
+      ctx.textBaseline = o.baseline ?? "alphabetic";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,0.85)";
+      ctx.strokeText(o.text, o.x, o.y);
+      ctx.fillText(o.text, o.x, o.y);
+    }
+    ctx.restore();
+  }
+  return { canvas: cv, missingImages };
 }
 
 // ---------- audio helpers ----------
@@ -1595,6 +1668,62 @@ export const handlers = {
       given: created.map((i) => ({ name: i.name, quantity: i.system?.quantity, uuid: i.uuid })),
       notFound: notFound.length ? notFound : undefined,
       untrackedCoins: untrackedCoins ? { ...untrackedCoins, note: "added to the existing coins; cleanup_session can't take these back" } : undefined,
+    };
+  },
+
+  // ---------- map preview ----------
+
+  async "scene.preview"({ sceneUuid, maxSize = 1024, show = {}, format = "jpeg" }) {
+    const scene = await resolveScene(sceneUuid);
+    const d = sceneDims(scene);
+    const gridSize = d.size ?? scene.grid.size;
+    const rect = { x: d.sceneX ?? 0, y: d.sceneY ?? 0, w: d.sceneWidth ?? scene.width, h: d.sceneHeight ?? scene.height };
+    const pxPerUnit = gridSize / (scene.grid.distance || 5);
+    const images = [];
+    const bg = backgroundOf(scene);
+    if (bg && show.background !== false) images.push({ src: bg, ...rect });
+    if (show.tiles !== false) {
+      const tiles = [...scene.tiles].filter((t) => t.texture?.src && !t.hidden).sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0) || (a.sort ?? 0) - (b.sort ?? 0));
+      for (const t of tiles) images.push({ src: t.texture.src, x: t.x, y: t.y, w: t.width, h: t.height });
+    }
+    const data = {
+      rect,
+      gridSize,
+      square: scene.grid.type === CONST.GRID_TYPES.SQUARE,
+      images,
+      walls: scene.walls.map((w) => ({ c: w.c, door: w.door, ds: w.ds, sight: w.sight, move: w.move })),
+      tokens: scene.tokens.map((t) => ({ x: t.x, y: t.y, w: t.width * gridSize, h: t.height * gridSize, name: t.name, disposition: t.disposition, hidden: t.hidden })),
+      lights: scene.lights.map((l) => ({ x: l.x, y: l.y, bright: (l.config?.bright ?? 0) * pxPerUnit })),
+      notes: scene.notes.map((n) => ({ x: n.x, y: n.y, text: n.text || n.entry?.name || n.label })),
+    };
+    const plan = previewOps(data, show, Math.min(2048, Math.max(256, maxSize)));
+    const mime = format === "png" ? "image/png" : format === "webp" ? "image/webp" : "image/jpeg";
+    let painted = await paintPreview(plan, { withImages: true });
+    let dataUrl;
+    let note;
+    try {
+      dataUrl = painted.canvas.toDataURL(mime, 0.85);
+    } catch {
+      // An image from another site without CORS taints the canvas; draw the rest without it.
+      painted = await paintPreview(plan, { withImages: false });
+      dataUrl = painted.canvas.toDataURL(mime, 0.85);
+      note = "The map art is hosted on another site that blocks reading it back, so only walls, tokens and the grid are shown.";
+    }
+    return {
+      mimeType: mime,
+      base64: dataUrl.slice(dataUrl.indexOf(",") + 1),
+      info: {
+        scene: scene.name,
+        sceneUuid: scene.uuid,
+        squares: { columns: plan.columns, rows: plan.rows },
+        imageSize: { width: plan.width, height: plan.height },
+        pixelsPerSquare: +(gridSize * plan.scale).toFixed(1),
+        counts: { walls: data.walls.length, doors: data.walls.filter((w) => w.door).length, tokens: data.tokens.length, lights: data.lights.length, pins: data.notes.length },
+        background: bg ?? null,
+        missingImages: painted.missingImages || undefined,
+        note,
+        legend: LEGEND,
+      },
     };
   },
 

@@ -27,7 +27,7 @@ test("tools work end to end through a fake Foundry client", async (t) => {
 
   const { tools } = await client.listTools();
   const names = tools.map((x) => x.name);
-  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session", "award_xp", "give_treasure", "find_audio", "audio_control", "create_playlist"]) {
+  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session", "award_xp", "give_treasure", "find_audio", "audio_control", "create_playlist", "preview_scene"]) {
     assert.ok(names.includes(n), `missing tool ${n}`);
   }
 

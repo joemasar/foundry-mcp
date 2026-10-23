@@ -1095,6 +1095,48 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     },
   );
 
+  // ---------- Map preview ----------
+
+  server.registerTool(
+    "preview_scene",
+    {
+      title: "Look at a map",
+      description:
+        "Get a picture of a scene to check a map: the map art and tiles, with the grid (square numbers on the edges, from 0 at the top-left), walls and doors in colour, tokens as boxes (dashed = hidden), lights and pins drawn on top. Works on any scene without changing what the GM or players see. Use it after building a map or placing tokens.",
+      inputSchema: {
+        sceneUuid: sceneRef,
+        maxSize: z.number().int().min(256).max(2048).default(1024).describe("Longest side of the picture in pixels."),
+        show: z
+          .object({
+            background: z.boolean().optional(),
+            tiles: z.boolean().optional(),
+            grid: z.boolean().optional(),
+            walls: z.boolean().optional(),
+            tokens: z.boolean().optional(),
+            lights: z.boolean().optional(),
+            notes: z.boolean().optional().describe("Map pins."),
+          })
+          .default({})
+          .describe("Turn layers off, e.g. { walls: false } to see the bare art. Everything is on by default."),
+        format: z.enum(["jpeg", "png", "webp"]).default("jpeg"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => {
+      try {
+        const r = await bridge.request<{ mimeType: string; base64: string; info: unknown }>("scene.preview", args, 120_000);
+        return {
+          content: [
+            { type: "image" as const, data: r.base64, mimeType: r.mimeType },
+            { type: "text" as const, text: JSON.stringify(r.info, null, 2) },
+          ],
+        };
+      } catch (err) {
+        return fail(err);
+      }
+    },
+  );
+
   // ---------- Music and ambience ----------
 
   server.registerTool(
