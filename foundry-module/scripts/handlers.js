@@ -32,14 +32,16 @@ function stamp(data) {
   return data;
 }
 
-const KEEP_ID = { keepId: true };
+// A new object every call: Foundry writes into the options it's given (createEmbeddedDocuments sets
+// `parent`), so a shared object would make later top-level creates look embedded in that parent.
+const keepId = () => ({ keepId: true });
 
 function createTagged(cls, data) {
-  return cls.create(stamp(data), KEEP_ID);
+  return cls.create(stamp(data), keepId());
 }
 
 function embedTagged(parent, type, list) {
-  return parent.createEmbeddedDocuments(type, list.map(stamp), KEEP_ID);
+  return parent.createEmbeddedDocuments(type, list.map(stamp), keepId());
 }
 
 // ---------- helpers ----------
@@ -618,7 +620,7 @@ export const handlers = {
     delete data._id;
     const docs = await docClass(src.documentName).createDocuments(
       Array.from({ length: count }, () => stamp(foundry.utils.deepClone(data))),
-      KEEP_ID,
+      keepId(),
     );
     return { created: docs.map((d) => ({ uuid: d.uuid, name: d.name })), summary: summarize(docs[0]) };
   },
