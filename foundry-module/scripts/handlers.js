@@ -142,14 +142,24 @@ function backgroundOf(scene) {
 function summarizeActor(a) {
   const s = a.system ?? {};
   const items = a.items.contents;
-  const strikes = items
-    .filter((i) => i.type === "melee")
-    .map((i) => ({
-      name: i.name,
-      bonus: i.system.bonus?.value,
-      damage: Object.values(i.system.damageRolls ?? {}).map((r) => `${r.damage} ${r.damageType}`).join(" plus "),
-      traits: i.system.traits?.value,
-    }));
+  const damageOf = (i) => {
+    if (!i) return undefined;
+    if (i.system.damageRolls) return Object.values(i.system.damageRolls).map((r) => `${r.damage} ${r.damageType}`).join(" plus ");
+    const d = i.system.damage;
+    return d?.die ? `${d.dice ?? 1}${d.die} ${d.damageType ?? ""}`.trim() : undefined;
+  };
+  // PF2e works out every strike (from attack items and from weapons) in system.actions; use that when present.
+  const derived = Array.isArray(s.actions) ? s.actions.filter((x) => x?.type === "strike" || x?.item) : [];
+  const strikes = derived.length
+    ? derived.map((x) => ({
+        name: x.label ?? x.item?.name,
+        bonus: x.totalModifier,
+        damage: damageOf(x.item),
+        traits: x.item?.system?.traits?.value,
+      }))
+    : items
+        .filter((i) => i.type === "melee")
+        .map((i) => ({ name: i.name, bonus: i.system.bonus?.value, damage: damageOf(i), traits: i.system.traits?.value }));
   const actions = items
     .filter((i) => i.type === "action")
     .map((i) => ({ name: i.name, type: i.system.actionType?.value, actions: i.system.actions?.value ?? undefined }));
