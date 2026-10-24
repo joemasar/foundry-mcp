@@ -469,3 +469,18 @@ export function trapMacroSource(cfg) {
     "if (cfg.once) await behavior.update({ disabled: true });",
   ].join("\n");
 }
+
+// ---------- waiting for token moves ----------
+
+// v14 plays a move out step by step, and a Region can teleport the token just after it stops, so
+// move_tokens watches positions until they settle. Given how long the positions have been unchanged
+// (stillMs), how long it has waited (elapsedMs) and whether every token is on its target square:
+// stop once all have arrived and held still briefly, once nothing has moved for a while (stopped
+// short or teleported), or at the time limit.
+export const MOVE_WAIT = { arrivedMs: 300, stillMs: 1200, maxMs: 10_000, pollMs: 150 };
+
+export function moveSettled({ stillMs, elapsedMs, allArrived }, limits = MOVE_WAIT) {
+  if (elapsedMs >= limits.maxMs) return true;
+  if (allArrived) return stillMs >= limits.arrivedMs;
+  return stillMs >= limits.stillMs;
+}

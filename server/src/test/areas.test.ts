@@ -234,3 +234,14 @@ test("the trap macro posts a whisper for a player's token and switches itself of
   await run(undefined, { data: { token: { name: "Goblin", actor: { hasPlayerOwner: false } } } }, behavior, game, ChatMessage, foundry);
   assert.equal(posted.length, 1);
 });
+
+test("move_tokens waits until tokens arrive, stop, or time runs out", () => {
+  // Arrived and held still briefly: done.
+  assert.equal(a.moveSettled({ stillMs: 300, elapsedMs: 900, allArrived: true }), true);
+  assert.equal(a.moveSettled({ stillMs: 150, elapsedMs: 900, allArrived: true }), false);
+  // Not on the target yet: a short pause mid-move (or before a teleport) isn't the end.
+  assert.equal(a.moveSettled({ stillMs: 600, elapsedMs: 3000, allArrived: false }), false);
+  assert.equal(a.moveSettled({ stillMs: 1200, elapsedMs: 3000, allArrived: false }), true);
+  // Never waits past the limit.
+  assert.equal(a.moveSettled({ stillMs: 0, elapsedMs: 10_000, allArrived: false }), true);
+});

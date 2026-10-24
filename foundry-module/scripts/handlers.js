@@ -2,7 +2,7 @@
 // plain JSON. Throwing an Error sends its message back to Claude.
 
 import { rankByName, volumeFromSlider } from "./audio.js";
-import { coveredSquares, regionShapes, shapeOutline, spellAreaFromPf2e, spellAreaShape, terrainDifficulties, tokensOnSquares, trapMacroSource } from "./areas.js";
+import { MOVE_WAIT, coveredSquares, moveSettled, regionShapes, shapeOutline, spellAreaFromPf2e, spellAreaShape, terrainDifficulties, tokensOnSquares, trapMacroSource } from "./areas.js";
 import { LEGEND, previewOps } from "./preview.js";
 import { treasureKind } from "./treasure.js";
 import { COUNTED_TYPES, EMBEDDED, TOP_TYPES, addXpLog, describePlan, isExpired, makeTag, matchesSession, newSession, planCleanup, summarizeSessions, tagOf, xpAwardsFor } from "./sessions.js";
@@ -1408,12 +1408,27 @@ export const handlers = {
       updates.push({ _id: t.id, x: c.x(m.x), y: c.y(m.y) });
     }
     const done = await scene.updateEmbeddedDocuments("Token", updates);
-    // In v14 a move plays out step by step and the update returns at the start, so wait for it to
-    // finish (a Region can still teleport the token right after), then report where it ended up.
-    const finished = done.map((t) => t.movement?.finished).filter(Boolean);
-    if (finished.length) {
-      await Promise.race([Promise.allSettled(finished), new Promise((r) => setTimeout(r, 10_000))]);
-      await new Promise((r) => setTimeout(r, 500));
+    // In v14 a move plays out step by step and the update returns at the start (Foundry's own
+    // "finished" promise settles early on long moves), and a Region can teleport the token just
+    // after it stops. So watch the positions until they settle, then report where tokens ended up.
+    const targets = updates.map((u) => ({ id: u._id, x: u.x, y: u.y }));
+    const posKey = () => targets.map((t) => `${scene.tokens.get(t.id)?.x},${scene.tokens.get(t.id)?.y}`).join("|");
+    const start = Date.now();
+    let last = posKey();
+    let lastChange = start;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, MOVE_WAIT.pollMs));
+      const now = Date.now();
+      const key = posKey();
+      if (key !== last) {
+        last = key;
+        lastChange = now;
+      }
+      const allArrived = targets.every((t) => {
+        const doc = scene.tokens.get(t.id);
+        return !doc || (doc.x === t.x && doc.y === t.y);
+      });
+      if (moveSettled({ stillMs: now - lastChange, elapsedMs: now - start, allArrived })) break;
     }
     return {
       scene: scene.name,
