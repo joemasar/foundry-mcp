@@ -27,7 +27,7 @@ test("tools work end to end through a fake Foundry client", async (t) => {
 
   const { tools } = await client.listTools();
   const names = tools.map((x) => x.name);
-  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session", "award_xp", "give_treasure", "find_audio", "audio_control", "create_playlist", "preview_scene", "create_map_scene"]) {
+  for (const n of ["foundry_status", "search_compendium", "create_pf2e_npc", "build_map_layout", "place_tokens", "create_journal", "start_session", "session_log", "cleanup_session", "award_xp", "give_treasure", "find_audio", "audio_control", "create_playlist", "preview_scene", "create_map_scene", "place_spell_area", "create_region"]) {
     assert.ok(names.includes(n), `missing tool ${n}`);
   }
 
@@ -110,6 +110,26 @@ test("tools work end to end through a fake Foundry client", async (t) => {
   assert.equal(map.action, "scene.buildLayout");
   assert.ok(map.params.layout.walls.some((w: any) => w.door === 1));
   assert.equal(map.params.layout.drawings.length, 2);
+
+  // Spell areas and Regions go to their handlers with defaults filled in.
+  const area = JSON.parse(textOf(await client.callTool({ name: "place_spell_area", arguments: { shape: "cone", size: 15, token: "Ezren", direction: "ne" } })));
+  assert.equal(area.action, "scene.placeSpellArea");
+  assert.equal(area.params.angle, 90);
+  assert.equal(area.params.hidden, false);
+  const region = JSON.parse(
+    textOf(
+      await client.callTool({
+        name: "create_region",
+        arguments: { name: "Pit", shapes: [{ type: "squares", cells: [{ x: 3, y: 4 }] }], trap: { damage: "2d6", save: { type: "reflex", dc: 18 } } },
+      }),
+    ),
+  );
+  assert.equal(region.action, "scene.createRegion");
+  assert.equal(region.params.visible, false);
+  assert.equal(region.params.trap.once, true);
+  assert.equal(region.params.trap.save.basic, true);
+  const badShape = await client.callTool({ name: "create_region", arguments: { name: "x", shapes: [{ type: "hexagon" }] } });
+  assert.equal(badShape.isError, true);
 
   // Session tools: listing defaults to the current session, cleanup previews unless confirmed.
   const log = JSON.parse(textOf(await client.callTool({ name: "session_log", arguments: {} })));

@@ -9,7 +9,7 @@ export const TOP_TYPES = ["Combat", "Scene", "Actor", "Item", "JournalEntry", "R
 
 // Embedded documents we tag when they're added to something Claude didn't make.
 export const EMBEDDED = {
-  Scene: { tokens: "Token", walls: "Wall", lights: "AmbientLight", notes: "Note", drawings: "Drawing", sounds: "AmbientSound", tiles: "Tile" },
+  Scene: { tokens: "Token", walls: "Wall", lights: "AmbientLight", notes: "Note", drawings: "Drawing", sounds: "AmbientSound", tiles: "Tile", regions: "Region" },
   Actor: { items: "Item" },
   JournalEntry: { pages: "JournalEntryPage" },
   Playlist: { sounds: "PlaylistSound" },

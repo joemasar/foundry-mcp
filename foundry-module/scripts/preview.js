@@ -23,6 +23,7 @@ export const LEGEND = {
   "red/yellow/green box": "hostile/neutral/friendly token (dashed = hidden)",
   "orange circle": "light (bright radius)",
   "cyan diamond": "map pin",
+  "tinted shape with a name": "Region or spell area in its own colour (dashed = players can't see it)",
   "numbers on the edges": "grid squares, counted from 0 at the top-left",
 };
 
@@ -48,8 +49,8 @@ export function wallColor(w) {
  * Shapes to draw, in picture pixels, in drawing order.
  * data: { rect, gridSize, square (bool), images: [{src,x,y,w,h}], walls: [{c,door,ds,sight,move}],
  *         tokens: [{x,y,w,h,name,disposition,hidden}] (canvas pixels), lights: [{x,y,bright}] (bright in pixels),
- *         notes: [{x,y,text}] }
- * show: { grid, walls, tokens, lights, notes } (all default true)
+ *         notes: [{x,y,text}], regions: [{name, color, gmOnly, polygons: [[x1,y1, x2,y2, ...], ...]}] (canvas pixels) }
+ * show: { grid, walls, tokens, lights, notes, regions } (all default true)
  */
 export function previewOps(data, show = {}, maxSize = 1024) {
   const on = (k) => show[k] !== false;
@@ -73,6 +74,18 @@ export function previewOps(data, show = {}, maxSize = 1024) {
   if (on("lights")) {
     for (const l of data.lights ?? []) {
       ops.push({ op: "circle", x: f.x(l.x), y: f.y(l.y), r: Math.max(3, (l.bright ?? 0) * f.scale), color: COLORS.light, width: 1.5 });
+    }
+  }
+
+  if (on("regions")) {
+    for (const r of data.regions ?? []) {
+      const polys = (r.polygons ?? []).filter((p) => p.length >= 6).map((p) => p.map((v, i) => (i % 2 ? f.y(v) : f.x(v))));
+      if (!polys.length) continue;
+      ops.push({ op: "poly", polys, color: r.color || "#4a90e2", width: 2, dashed: !!r.gmOnly });
+      if (r.name) {
+        const c = centroid(polys[0]);
+        ops.push({ op: "text", text: shortName(r.name, 16), x: c.x, y: c.y, size: 11, color: COLORS.label, align: "center", baseline: "middle" });
+      }
     }
   }
 
@@ -104,6 +117,18 @@ export function previewOps(data, show = {}, maxSize = 1024) {
   }
 
   return { width: f.width, height: f.height, scale: f.scale, columns, rows, ops };
+}
+
+// Middle of a polygon's points (good enough to place a label).
+export function centroid(points) {
+  let x = 0;
+  let y = 0;
+  const n = points.length / 2;
+  for (let i = 0; i < points.length; i += 2) {
+    x += points[i];
+    y += points[i + 1];
+  }
+  return { x: x / n, y: y / n };
 }
 
 export function shortName(name, max = 10) {

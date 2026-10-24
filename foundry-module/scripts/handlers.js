@@ -2,6 +2,7 @@
 // plain JSON. Throwing an Error sends its message back to Claude.
 
 import { rankByName, volumeFromSlider } from "./audio.js";
+import { coveredSquares, regionShapes, shapeOutline, spellAreaFromPf2e, spellAreaShape, terrainDifficulties, tokensOnSquares, trapMacroSource } from "./areas.js";
 import { LEGEND, previewOps } from "./preview.js";
 import { treasureKind } from "./treasure.js";
 import { COUNTED_TYPES, EMBEDDED, TOP_TYPES, addXpLog, describePlan, isExpired, makeTag, matchesSession, newSession, planCleanup, summarizeSessions, tagOf, xpAwardsFor } from "./sessions.js";
@@ -475,6 +476,53 @@ function xpAwards(ref) {
   return xpAwardsFor(actors, ref, session.id).map((x) => ({ ...x, at: new Date(x.at).toLocaleString() }));
 }
 
+// ---------- spell area and Region helpers ----------
+
+// The scene's grid for areas.js: pixels and feet per square, and where the map starts.
+function sceneFrame(scene) {
+  const c = converter(scene, "grid");
+  return { size: c.size, distance: scene.grid.distance || 5, x0: c.d.sceneX ?? 0, y0: c.d.sceneY ?? 0 };
+}
+
+function sceneSquares(scene) {
+  const d = sceneDims(scene);
+  const size = d.size ?? scene.grid.size;
+  return { columns: Math.round((d.sceneWidth ?? scene.width) / size), rows: Math.round((d.sceneHeight ?? scene.height) / size) };
+}
+
+function oneToken(scene, ref) {
+  const found = findTokens(scene, [ref]);
+  if (found.length > 1) throw new Error(`"${ref}" matches ${found.length} tokens (${found.map((t) => t.name).join(", ")}). Use the exact name or the token ID.`);
+  return found[0];
+}
+
+// Squares an area covers and the tokens standing in it, for Claude to report.
+function areaReport(scene, shapes) {
+  const { columns, rows } = sceneSquares(scene);
+  const squares = coveredSquares(shapes, sceneFrame(scene), columns, rows);
+  const tokens = scene.tokens.map((t) => ({ name: t.name, hidden: t.hidden, ...toGrid(scene, t.x, t.y), w: t.width, h: t.height }));
+  const inside = tokensOnSquares(tokens, squares);
+  return {
+    squaresCovered: squares.length,
+    squares: squares.length <= 80 ? squares.map((q) => [q.x, q.y]) : undefined,
+    tokensInside: inside.map((t) => (t.hidden ? `${t.name} (hidden)` : t.name)),
+  };
+}
+
+// Outlines of a Region in canvas pixels: Foundry's own polygons when it can make them, else ours.
+function regionPolygons(region, gridSize) {
+  try {
+    const polys = region.polygons;
+    if (polys?.length) return polys.map((p) => Array.from(p.points));
+  } catch {}
+  return region.shapes
+    .filter((s) => !s.hole)
+    .map((s) => shapeOutline(s.toObject?.() ?? s, gridSize))
+    .filter((pts) => pts.length >= 6);
+}
+
+const REGION_COLORS = { trap: "#d0021b", terrain: "#8b5a2b", teleport: "#8e44ad", plain: "#4a90e2", arrival: "#c39bd3" };
+
 // ---------- map preview helpers ----------
 
 function loadImage(src) {
@@ -521,6 +569,19 @@ async function paintPreview(plan, { withImages }) {
       ctx.fillRect(o.x, o.y, o.w, o.h);
       ctx.globalAlpha = 1;
       ctx.strokeRect(o.x, o.y, o.w, o.h);
+    } else if (o.op === "poly") {
+      // All of a Region's polygons in one path, so holes stay empty.
+      ctx.beginPath();
+      for (const p of o.polys) {
+        ctx.moveTo(p[0], p[1]);
+        for (let i = 2; i < p.length; i += 2) ctx.lineTo(p[i], p[i + 1]);
+        ctx.closePath();
+      }
+      ctx.globalAlpha = 0.3;
+      ctx.fill("evenodd");
+      ctx.globalAlpha = 1;
+      if (o.dashed) ctx.setLineDash([6, 4]);
+      ctx.stroke();
     } else if (o.op === "circle") {
       ctx.beginPath();
       ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
@@ -1673,6 +1734,173 @@ export const handlers = {
     };
   },
 
+  // ---------- spell areas and Regions ----------
+
+  async "scene.placeSpellArea"({ sceneUuid, spellUuid, shape, size, at, token: tokenRef, direction, toward, angle = 90, width = 5, name, color, hidden = false, follow = false }) {
+    const scene = await resolveScene(sceneUuid);
+    let spell = null;
+    let kind = shape;
+    let feet = size;
+    let pf2eType = shape;
+    if (spellUuid) {
+      spell = await getDoc(spellUuid, "spell");
+      if (spell.documentName !== "Item" || spell.type !== "spell") throw new Error(`"${spell.name}" is not a spell.`);
+      if (!shape || !size) {
+        const a = spellAreaFromPf2e(spell.system?.area);
+        kind = shape ?? a.kind;
+        feet = size ?? a.feet;
+        pf2eType = shape ?? a.pf2eType;
+      }
+    }
+    if (!kind) throw new Error("Give a shape (burst, cone, line, emanation or square) or a spellUuid.");
+    if (!feet) throw new Error("Give the size in feet.");
+    const tok = tokenRef ? oneToken(scene, tokenRef) : null;
+    if (follow && !tok) throw new Error("follow needs a token for the area to move with.");
+    const src = tok?._source;
+    const shapeData = spellAreaShape(
+      {
+        kind,
+        feet,
+        at,
+        token: src ? { x: src.x, y: src.y, width: src.width, height: src.height, shape: src.shape } : undefined,
+        direction,
+        toward,
+        angle,
+        widthFeet: width,
+      },
+      sceneFrame(scene),
+    );
+    const flags = { pf2e: { areaShape: pf2eType } };
+    if (spell?.actor) {
+      try {
+        flags.pf2e.origin = { name: spell.name, slug: spell.slug, traits: [...(spell.system.traits?.value ?? [])], ...spell.getOriginData() };
+      } catch {}
+    }
+    const data = {
+      name: name ?? spell?.name ?? `${feet}-foot ${kind}`,
+      color: color ?? "#ff7a00",
+      shapes: [shapeData],
+      highlightMode: "coverage",
+      displayMeasurements: true,
+      visibility: hidden ? CONST.REGION_VISIBILITY.GAMEMASTER : CONST.REGION_VISIBILITY.ALWAYS,
+      flags,
+    };
+    if (follow) {
+      // A Region attached to a token must match the token's hidden state and level.
+      data.attachment = { token: tok.id };
+      data.hidden = !!tok.hidden;
+      data.levels = src.level ? [src.level] : [];
+    }
+    const [region] = await embedTagged(scene, "Region", [data]);
+    const notes = [];
+    if (kind === "emanation" && tok && !at) notes.push("An emanation includes the caster's own space.");
+    if (scene.grid.type !== CONST.GRID_TYPES.SQUARE) notes.push("Squares are worked out as if the grid were square.");
+    return {
+      scene: scene.name,
+      region: { uuid: region.uuid, name: region.name },
+      area: `${feet}-foot ${kind}`,
+      from: tok?.name,
+      ...areaReport(scene, [shapeData]),
+      visibleToPlayers: !hidden,
+      follows: follow ? tok.name : undefined,
+      note: notes.length ? notes.join(" ") : undefined,
+    };
+  },
+
+  async "scene.createRegion"({ sceneUuid, name, shapes, color, visible = false, difficultTerrain, teleport, trap }) {
+    const scene = await resolveScene(sceneUuid);
+    const shapeData = regionShapes(shapes, sceneFrame(scene));
+    const visibility = visible ? CONST.REGION_VISIBILITY.ALWAYS : CONST.REGION_VISIBILITY.GAMEMASTER;
+    const regionId = foundry.utils.randomID();
+    const behaviors = [];
+    const out = {};
+
+    // Check everything before creating anything.
+    if (difficultTerrain) {
+      const fields = CONFIG.RegionBehavior.dataModels.modifyMovementCost?.schema?.fields?.difficulties?.fields;
+      const actions = Object.keys(fields ?? {});
+      if (!actions.length) throw new Error("This Foundry version has no difficult terrain behaviour.");
+      behaviors.push({
+        name: difficultTerrain.level === "greater" ? "Greater difficult terrain" : "Difficult terrain",
+        type: "modifyMovementCost",
+        system: { difficulties: terrainDifficulties(actions, difficultTerrain.level, difficultTerrain.flying) },
+      });
+    }
+    let trapSource = null;
+    let trapMacro = null;
+    if (trap) {
+      if (trap.macroUuid) {
+        trapMacro = await getDoc(trap.macroUuid, "macro");
+        if (trapMacro.documentName !== "Macro") throw new Error(`"${trap.macroUuid}" is not a macro.`);
+      } else {
+        if (!trap.damage && !trap.save && !trap.message && !trap.pause) throw new Error("Give the trap a damage, save, message, pause or macroUuid.");
+        trapSource = trapMacroSource({ name, ...trap });
+      }
+    }
+    let destScene = null;
+    if (teleport) {
+      if (!teleport.toRegionUuid && !teleport.to) throw new Error("Give teleport.toRegionUuid (an existing region) or teleport.to (an arrival area).");
+      if (teleport.to) destScene = teleport.toSceneUuid ? await resolveScene(teleport.toSceneUuid) : scene;
+    }
+
+    if (teleport) {
+      let dest;
+      if (teleport.toRegionUuid) {
+        dest = await getDoc(teleport.toRegionUuid, "region");
+        if (dest.documentName !== "Region") throw new Error(`"${teleport.toRegionUuid}" is not a region.`);
+      } else {
+        // The new region's ID is chosen up front, so the arrival area can point back to it.
+        const back = teleport.twoWay
+          ? [{ name: "Teleport back", type: "teleportToken", system: { destinations: [`${scene.uuid}.Region.${regionId}`], choice: !!teleport.choice } }]
+          : [];
+        [dest] = await embedTagged(destScene, "Region", [
+          {
+            name: `${name} (arrival)`,
+            color: REGION_COLORS.arrival,
+            shapes: regionShapes([{ type: "rectangle", ...teleport.to }], sceneFrame(destScene)),
+            visibility,
+            behaviors: back,
+          },
+        ]);
+      }
+      behaviors.push({ name: "Teleport", type: "teleportToken", system: { destinations: [dest.uuid], placement: teleport.placement ?? "random", choice: !!teleport.choice } });
+      out.destination = { uuid: dest.uuid, name: dest.name, scene: dest.parent?.name, twoWay: (teleport.twoWay && !teleport.toRegionUuid) || undefined };
+    }
+    if (trapSource) {
+      trapMacro = await createTagged(Macro.implementation, {
+        name: `Trap: ${name}`,
+        type: "script",
+        command: trapSource,
+        folder: await getFolderId(trap.folder ?? "Traps", "Macro"),
+        ownership: { default: CONST.DOCUMENT_OWNERSHIP_LEVELS.NONE },
+      });
+    }
+    if (trapMacro) {
+      behaviors.push({ name: "Trap", type: "executeMacro", system: { events: [CONST.REGION_EVENTS.TOKEN_ENTER], uuid: trapMacro.uuid, everyone: false } });
+      out.trapMacro = { uuid: trapMacro.uuid, name: trapMacro.name };
+    }
+
+    const kind = trap ? "trap" : teleport ? "teleport" : difficultTerrain ? "terrain" : "plain";
+    // Kept from players with visibility, not `hidden`: a hidden Region's behaviours don't run.
+    const [region] = await embedTagged(scene, "Region", [{ _id: regionId, name, color: color ?? REGION_COLORS[kind], shapes: shapeData, visibility, behaviors }]);
+    const notes = [];
+    if (trap && !trap.macroUuid) {
+      notes.push(
+        `Goes off when ${trap.playersOnly === false ? "any token" : "a player's token"} enters, and posts its card ${trap.announce ? "in public chat" : "to the GM only"}` +
+          (trap.once === false ? "." : ", then switches itself off. Turn the Trap behaviour back on in the region's settings to re-arm it."),
+      );
+    }
+    return {
+      scene: scene.name,
+      region: { uuid: region.uuid, name: region.name },
+      behaviors: region.behaviors.map((b) => `${b.name} (${b.type})`),
+      visibleToPlayers: visible,
+      ...out,
+      squaresCovered: areaReport(scene, shapeData).squaresCovered,
+      note: notes.length ? notes.join(" ") : undefined,
+    };
+  },
+
   // ---------- map preview ----------
 
   async "scene.preview"({ sceneUuid, maxSize = 1024, show = {}, format = "jpeg" }) {
@@ -1697,6 +1925,10 @@ export const handlers = {
       tokens: scene.tokens.map((t) => ({ x: t.x, y: t.y, w: t.width * gridSize, h: t.height * gridSize, name: t.name, disposition: t.disposition, hidden: t.hidden })),
       lights: scene.lights.map((l) => ({ x: l.x, y: l.y, bright: (l.config?.bright ?? 0) * pxPerUnit })),
       notes: scene.notes.map((n) => ({ x: n.x, y: n.y, text: n.text || n.entry?.name || n.label })),
+      regions:
+        show.regions === false
+          ? []
+          : scene.regions.map((r) => ({ name: r.name, color: r.color?.css ?? String(r.color ?? "#4a90e2"), gmOnly: r.visibility !== CONST.REGION_VISIBILITY.ALWAYS, polygons: regionPolygons(r, gridSize) })),
     };
     const plan = previewOps(data, show, Math.min(2048, Math.max(256, maxSize)));
     const mime = format === "png" ? "image/png" : format === "webp" ? "image/webp" : "image/jpeg";
@@ -1720,7 +1952,10 @@ export const handlers = {
         squares: { columns: plan.columns, rows: plan.rows },
         imageSize: { width: plan.width, height: plan.height },
         pixelsPerSquare: +(gridSize * plan.scale).toFixed(1),
-        counts: { walls: data.walls.length, doors: data.walls.filter((w) => w.door).length, tokens: data.tokens.length, lights: data.lights.length, pins: data.notes.length },
+        counts: { walls: data.walls.length, doors: data.walls.filter((w) => w.door).length, tokens: data.tokens.length, lights: data.lights.length, pins: data.notes.length, regions: scene.regions.size },
+        regions: scene.regions.size
+          ? scene.regions.map((r) => ({ name: r.name, uuid: r.uuid, behaviors: r.behaviors.map((b) => b.type), playersSee: r.visibility === CONST.REGION_VISIBILITY.ALWAYS }))
+          : undefined,
         background: bg ?? null,
         missingImages: painted.missingImages || undefined,
         note,

@@ -70,3 +70,23 @@ test("layers can be turned off, and small squares get labels every 5", () => {
   const hex = p.previewOps({ ...data, square: false }, {}, 1000);
   assert.equal(hex.ops.filter((o: any) => o.color === p.COLORS.grid).length, 0);
 });
+
+test("regions are drawn as tinted outlines with their names, dashed when players can't see them", () => {
+  const regions = [
+    { name: "Pit trap", color: "#d0021b", gmOnly: true, polygons: [[200, 100, 400, 100, 400, 300, 200, 300]] },
+    { name: "Fireball", color: "#ff7a00", gmOnly: false, polygons: [[1000, 500, 1100, 500, 1100, 600]] },
+    { name: "Empty", color: "#000", polygons: [] },
+  ];
+  const plan = p.previewOps({ rect, gridSize: 100, regions }, {}, 1000);
+  const polys = plan.ops.filter((o: any) => o.op === "poly");
+  assert.equal(polys.length, 2);
+  assert.deepEqual(polys[0].polys, [[0, 0, 100, 0, 100, 100, 0, 100]]);
+  assert.equal(polys[0].dashed, true);
+  assert.equal(polys[1].dashed, false);
+  assert.ok(plan.ops.some((o: any) => o.op === "text" && o.text === "Pit trap" && o.x === 50 && o.y === 50));
+  // Drawn under the walls, and can be turned off.
+  const withWall = p.previewOps({ rect, gridSize: 100, regions, walls: [{ c: [200, 100, 400, 100], door: 0 }] }, {}, 1000);
+  const kinds = withWall.ops.map((o: any) => o.op);
+  assert.ok(kinds.indexOf("poly") < kinds.indexOf("line", kinds.indexOf("poly")));
+  assert.equal(p.previewOps({ rect, gridSize: 100, regions }, { regions: false, grid: false }, 1000).ops.length, 0);
+});

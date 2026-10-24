@@ -51,9 +51,23 @@ Released as v0.4.0. Live-tested on dev (2026-10-23): XP award and undo, treasure
 - `create_map_scene`: an image (local file, URL, base64 or a Foundry path), for example from the Claude app's image tools, becomes a scene sized to the grid asked for (`columns`, `rows`, or the art's own `pixelsPerSquare`; otherwise 25 squares on the long side). Rooms and doors become walls and doors, with no floors drawn over the art. Then `preview_scene` to check it lines up
 - `upload_asset` now works out a missing file extension from the image bytes
 
+## Built, not yet released: v0.5 (item 10)
+
+On branch `feature/spell-areas-regions`. Needs a module release (0.5.0) and a live test on dev.
+
+### Spell areas and Regions (Tier 3, item 10)
+- Foundry v14 has no measured templates: they became Regions. Spell areas are Regions shaped the way PF2e places them (burst = circle, 90° cone, line one square wide, emanation around the token), flagged with PF2e's `areaShape`
+- `place_spell_area`: a burst, cone, line, emanation or square, in feet, from a PF2e spell's own area or a shape and size. At a grid point (bursts centre on grid corners), or from a token: centred on it, surrounding it, or starting at its edge and aimed by direction (degrees or compass) or toward a square. Returns the squares covered and the tokens inside. Can be GM-only, or attached to the token so it moves with it
+- `create_region`: rectangles, circles, polygons or single squares (holes allowed), hidden from players by default. Behaviours: difficult or greater difficult terrain (PF2e movement costs; flying ignores it unless asked), teleport to an existing region or a new arrival area on any scene (two-way optional), and traps
+- Traps fire when a player's token enters: a tagged script macro (run on the GM's client) posts a card to the GM with PF2e `@Check` and `@Damage` buttons, can pause the game, and switches the trap off after one use. Or run your own macro
+- Hidden means `visibility: GAMEMASTER`, not Region `hidden`: in v14 a hidden Region's behaviours don't run
+- `preview_scene` draws Regions and spell areas in their colours with names (dashed = players can't see them) and lists them with their behaviours
+- Regions and trap macros are session-tagged, so `session_log` and `cleanup_session` find them
+- Pure geometry (feet to pixels, cone and line aim, token edges, squares covered, outlines) is in `foundry-module/scripts/areas.js` with tests in `server/src/test/areas.test.ts`
+
 ## Next
 
-10. **Spell areas and Regions.** Spell area templates, and v14 Regions for traps, difficult terrain and teleporters.
+Nothing planned after item 10. Then the production install (see Housekeeping).
 
 ## Housekeeping
 

@@ -1226,6 +1226,7 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
             tokens: z.boolean().optional(),
             lights: z.boolean().optional(),
             notes: z.boolean().optional().describe("Map pins."),
+            regions: z.boolean().optional().describe("Regions and spell areas."),
           })
           .default({})
           .describe("Turn layers off, e.g. { walls: false } to see the bare art. Everything is on by default."),
@@ -1246,6 +1247,100 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
         return fail(err);
       }
     },
+  );
+
+  // ---------- Spell areas and Regions ----------
+
+  const gridPoint = z.object({ x: z.number(), y: z.number() });
+
+  server.registerTool(
+    "place_spell_area",
+    {
+      title: "Place a spell area",
+      description:
+        "Mark a spell's area on a scene (a v14 Region, which replaced templates): a burst, cone, line, emanation or square, sized in feet. Give a PF2e spell (spellUuid) to use its own area, or shape and size. Place it at a grid point, or from a token: a burst or square is centred on the token, an emanation surrounds it, and a cone or line starts at the token's edge, aimed with direction or toward. Returns the squares covered and the tokens inside. Grid points count squares from 0 at the top-left: whole numbers are grid lines, so a burst at {x:5,y:5} is centred on a corner, as PF2e bursts are.",
+      inputSchema: {
+        sceneUuid: sceneRef,
+        spellUuid: z.string().optional().describe("A PF2e spell (in the world, a compendium, or on an actor) whose area to use."),
+        shape: z.enum(["burst", "cone", "line", "emanation", "square"]).optional().describe("Overrides the spell's shape. Needed without spellUuid."),
+        size: z.number().positive().optional().describe("Feet: a burst's or emanation's radius, a cone's or line's length, a square's side. Overrides the spell's size."),
+        at: gridPoint
+          .optional()
+          .describe("Grid point: a burst's centre, a cone's or line's start, a square's top-left corner, or the top-left of the square an emanation comes from."),
+        token: z.string().optional().describe("Token name or ID of the caster or creature the area comes from (a token on this scene)."),
+        direction: z
+          .union([z.number(), z.string()])
+          .optional()
+          .describe("Aim for a cone or line: degrees (0 = east, 90 = south) or a compass point (n, ne, e, se, s, sw, w, nw)."),
+        toward: gridPoint.optional().describe("Aim a cone or line at this grid point instead of a direction."),
+        angle: z.number().min(1).max(360).default(90).describe("Cone width in degrees (PF2e cones are 90)."),
+        width: z.number().positive().default(5).describe("Line width in feet."),
+        name: z.string().optional().describe("Defaults to the spell's name."),
+        color: z.string().optional().describe("CSS colour, e.g. '#ff7a00'."),
+        hidden: z.boolean().default(false).describe("Only the GM sees it."),
+        follow: z.boolean().default(false).describe("Attach it to the token so it moves with it (auras, emanations)."),
+      },
+    },
+    (args) => call("scene.placeSpellArea", args),
+  );
+
+  const regionShape = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("rectangle"), x: z.number(), y: z.number(), w: z.number().positive(), h: z.number().positive(), hole: z.boolean().optional() }),
+    z.object({ type: z.literal("circle"), x: z.number(), y: z.number(), radius: z.number().positive().describe("In squares."), hole: z.boolean().optional() }),
+    z.object({ type: z.literal("polygon"), points: z.array(z.number()).min(6).describe("[x1,y1, x2,y2, ...] grid points."), hole: z.boolean().optional() }),
+    z.object({ type: z.literal("squares"), cells: z.array(gridPoint).min(1).describe("Single squares by their top-left, e.g. {x:3,y:4}."), hole: z.boolean().optional() }),
+  ]);
+
+  server.registerTool(
+    "create_region",
+    {
+      title: "Create a region",
+      description:
+        "Make a v14 Region on a scene for a trap, difficult terrain or a teleporter (or several at once), hidden from players unless visible is true. Shapes are in grid squares from 0 at the top-left; hole: true cuts a shape out. A trap goes off when a player's token enters: it posts a card to the GM with PF2e save and damage buttons (or runs your macro), can pause the game, and switches itself off after one use unless once is false. A teleporter sends tokens to an existing region, or to a new arrival area on this or another scene (twoWay adds the way back). Check it with preview_scene.",
+      inputSchema: {
+        sceneUuid: sceneRef,
+        name: z.string(),
+        shapes: z.array(regionShape).min(1),
+        visible: z.boolean().default(false).describe("Let players see the region. Hidden regions still work."),
+        color: z.string().optional().describe("CSS colour. Defaults by kind: red trap, brown terrain, purple teleporter."),
+        difficultTerrain: z
+          .object({
+            level: z.enum(["difficult", "greater"]).default("difficult"),
+            flying: z.boolean().default(false).describe("Also slows flying creatures."),
+          })
+          .optional(),
+        teleport: z
+          .object({
+            toRegionUuid: z.string().optional().describe("An existing region to send tokens to (any scene)."),
+            to: z
+              .object({ x: z.number(), y: z.number(), w: z.number().positive(), h: z.number().positive() })
+              .optional()
+              .describe("Or a new arrival area, in squares."),
+            toSceneUuid: z.string().optional().describe("Scene for the arrival area. Defaults to this scene."),
+            twoWay: z.boolean().default(false).describe("The arrival area teleports back here."),
+            choice: z.boolean().default(false).describe("Ask the player before teleporting."),
+            placement: z.enum(["random", "center", "relative"]).default("random").describe("Where in the arrival area the token lands."),
+          })
+          .optional(),
+        trap: z
+          .object({
+            message: z.string().optional().describe("What happens, e.g. 'The floor gives way!'"),
+            save: z
+              .object({ type: z.enum(["fortitude", "reflex", "will"]), dc: z.number().int().positive(), basic: z.boolean().default(true) })
+              .optional(),
+            damage: z.string().optional().describe("Dice, e.g. '2d6' or '4d6+3'."),
+            damageType: z.string().optional().describe("e.g. 'bludgeoning', 'fire'."),
+            once: z.boolean().default(true).describe("Switch off after going off once."),
+            pause: z.boolean().default(false).describe("Pause the game when it goes off."),
+            announce: z.boolean().default(false).describe("Post the card in public chat instead of to the GM."),
+            playersOnly: z.boolean().default(true).describe("Only player characters set it off."),
+            macroUuid: z.string().optional().describe("Run this macro instead of posting a card."),
+            folder: z.string().optional().describe("Macro folder for the trap's macro. Default 'Traps'."),
+          })
+          .optional(),
+      },
+    },
+    (args) => call("scene.createRegion", args),
   );
 
   // ---------- Music and ambience ----------
