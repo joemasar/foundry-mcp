@@ -30,9 +30,9 @@ What the Foundry MCP server can do today, and what's planned next. Built for a P
 - **v0.3.1:** fixes creates failing after a token, wall or item was added ("folders is not a valid embedded Document within the Scene Document"). A shared `{ keepId: true }` options object picked up Foundry's `parent`; every create now gets a fresh one
 - Live-tested on v0.3.1 (2026-10-23): import into a folder, hidden token on an existing scene, linked journal, `session_log`, cleanup preview and confirm. The scene kept its other tokens
 
-## Built, not yet released: v0.4.0 (items 5, 7, 8 and 9)
+## Done: v0.4 (items 5, 7, 8 and 9)
 
-On branch `feature/rewards`, one commit per item. Ships as one module release (v0.4.0) after a live test on dev.
+Released as v0.4.0. Live-tested on dev (2026-10-23): XP award and undo, treasure preview, the Party stash and a loot actor (with coins), a playlist played and stopped, a map-art scene with walls, previews of two scenes, session_log, and cleanup preview and confirm. **v0.4.1** fixes two things the test found: an empty `find_audio` search listed nothing, and bombs (weapons with the consumable trait in PF2e 8.x) were picked as permanent items.
 
 ### Rewards (Tier 2, item 5)
 - `award_xp`: XP for the PF2e Party or chosen characters, from a number, an accomplishment (minor 10, moderate 30, major 80) and/or the creatures defeated (always the four-PC award, as GM Core says). Shows before and after, flags anyone ready to level up, optional public chat note, `dryRun` preview. XP isn't a document, so each character keeps a short log of Claude's awards: `session_log` lists them and `cleanup_session` says they stay (a negative award takes XP back)
