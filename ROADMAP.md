@@ -73,7 +73,7 @@ Nothing planned after item 10. Then the production install (see Housekeeping).
 - `move_tokens` reported the tokens' old squares: in v14 a move plays out step by step and the update returns at the start. It now waits for each move to finish (up to 10 seconds) and reports where each token ended up, so a teleport or a stopped move shows
 - `preview_scene` could put a Region's name on top of a token's name. Region names now go at the free spot inside the Region nearest its middle
 
-Live-checked on dev (2026-10-24): labels stay clear of tokens and short moves report the right square, but a long move onto a portal came back mid-path (Foundry's own "move finished" signal settles early on long moves). **v0.5.2** fixes that: `move_tokens` watches the tokens' positions and reports once they reach their squares, or once they've been still for about a second (which also catches a teleport), giving up after 10 seconds.
+Live-checked on dev (2026-10-24): labels stay clear of tokens and short moves report the right square, but a long move onto a portal came back mid-path (Foundry's own "move finished" signal settles early on long moves). **v0.5.2** fixes that: `move_tokens` watches the tokens' positions and reports once they reach their squares, or once they've been still for about a second (which also catches a teleport), giving up after 10 seconds. Live-checked on dev (2026-10-24): short and 9-square moves report their squares, a long move onto a portal reports the arrival square, and the trap still fires.
 
 Still to check: the trap's chat card shows PF2e's save and damage buttons (the message stores `@Check` / `@Damage` text that PF2e turns into buttons when it shows the card).
 
