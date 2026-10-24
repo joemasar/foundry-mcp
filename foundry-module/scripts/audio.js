@@ -37,8 +37,9 @@ export function nameScore(name, query) {
 }
 
 // items: [{ name, ...}]. extraText(item) can add text that also counts, at half weight (a track's
-// playlist name, say). Returns matches best first.
+// playlist name, say). Returns matches best first. An empty query returns everything by name.
 export function rankByName(items, query, extraText) {
+  if (!String(query ?? "").trim()) return [...items].sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const out = [];
   for (const item of items) {
     let score = nameScore(item.name, query);

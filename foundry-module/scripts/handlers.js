@@ -3,6 +3,7 @@
 
 import { rankByName, volumeFromSlider } from "./audio.js";
 import { LEGEND, previewOps } from "./preview.js";
+import { treasureKind } from "./treasure.js";
 import { COUNTED_TYPES, EMBEDDED, TOP_TYPES, addXpLog, describePlan, isExpired, makeTag, matchesSession, newSession, planCleanup, summarizeSessions, tagOf, xpAwardsFor } from "./sessions.js";
 
 const MODULE_ID = "foundry-mcp";
@@ -574,10 +575,6 @@ function findAudio(query) {
 
 // ---------- treasure helpers ----------
 
-const PERMANENT_TYPES = new Set(["weapon", "armor", "shield", "equipment", "backpack"]);
-const CONSUMABLE_TYPES = new Set(["consumable", "ammo"]);
-// Never hand these out as random treasure.
-const SKIP_TREASURE_TRAITS = new Set(["cursed", "artifact", "intelligent", "snare"]);
 const COIN_NAMES = { pp: "Platinum Pieces", gp: "Gold Pieces", sp: "Silver Pieces", cp: "Copper Pieces" };
 
 // Official items come from the PF2e system's own compendiums.
@@ -1596,11 +1593,10 @@ export const handlers = {
       const official = isOfficialPack(p);
       const index = await p.getIndex({ fields: ["system.level.value", "system.traits.rarity", "system.traits.value", "system.price.value", "system.price.per"] });
       for (const e of index) {
-        const kind = PERMANENT_TYPES.has(e.type) ? "permanent" : CONSUMABLE_TYPES.has(e.type) ? "consumable" : null;
+        const kind = treasureKind(e.type, e.system?.traits?.value ?? []);
         const level = e.system?.level?.value;
         if (!kind || !want.has(level)) continue;
         if (!okRarity.has(e.system?.traits?.rarity ?? "common")) continue;
-        if ((e.system?.traits?.value ?? []).some((t) => SKIP_TREASURE_TRAITS.has(t))) continue;
         const key = `${kind}|${level}|${official}`;
         const n = counts.get(key) ?? 0;
         if (n >= limitPerLevel) continue;

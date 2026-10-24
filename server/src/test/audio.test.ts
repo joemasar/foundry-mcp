@@ -51,3 +51,11 @@ test("tracks added to the GM's playlists are tracked for cleanup", () => {
   const plan = s.planCleanup([{ uuid: "Playlist.p.PlaylistSound.x", type: "PlaylistSound", name: "Rain", parentUuid: "Playlist.p", parentName: "Weather", tag: {} }]);
   assert.equal(plan.embedded.length, 1);
 });
+
+test("an empty query lists everything, by name", () => {
+  const lists = [{ name: "Tavern" }, { name: "Ambience" }, { name: "Combat" }];
+  assert.deepEqual(names(a.rankByName(lists, "")), ["Ambience", "Combat", "Tavern"]);
+  assert.deepEqual(names(a.rankByName(lists, "   ")), ["Ambience", "Combat", "Tavern"]);
+  assert.equal(a.rankByName(lists, undefined).length, 3);
+  assert.equal(lists[0].name, "Tavern", "the original list isn't reordered");
+});
