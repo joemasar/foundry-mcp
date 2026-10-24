@@ -78,13 +78,18 @@ export function previewOps(data, show = {}, maxSize = 1024) {
   }
 
   if (on("regions")) {
+    // Labels keep clear of token boxes (and each other), since token names are drawn on top.
+    const taken = on("tokens") ? (data.tokens ?? []).map((t) => ({ x: f.x(t.x), y: f.y(t.y), w: t.w * f.scale, h: t.h * f.scale })) : [];
     for (const r of data.regions ?? []) {
       const polys = (r.polygons ?? []).filter((p) => p.length >= 6).map((p) => p.map((v, i) => (i % 2 ? f.y(v) : f.x(v))));
       if (!polys.length) continue;
       ops.push({ op: "poly", polys, color: r.color || "#4a90e2", width: 2, dashed: !!r.gmOnly });
       if (r.name) {
-        const c = centroid(polys[0]);
-        ops.push({ op: "text", text: shortName(r.name, 16), x: c.x, y: c.y, size: 11, color: COLORS.label, align: "center", baseline: "middle" });
+        const text = shortName(r.name, 16);
+        const box = { w: labelWidth(text, 11), h: 14 };
+        const c = labelSpot(polys[0], box, taken);
+        taken.push({ x: c.x - box.w / 2, y: c.y - box.h / 2, ...box });
+        ops.push({ op: "text", text, x: c.x, y: c.y, size: 11, color: COLORS.label, align: "center", baseline: "middle" });
       }
     }
   }
@@ -129,6 +134,52 @@ export function centroid(points) {
     y += points[i + 1];
   }
   return { x: x / n, y: y / n };
+}
+
+export function pointInPolygon(points, p) {
+  let inside = false;
+  for (let i = 0, j = points.length - 2; i < points.length; j = i, i += 2) {
+    const [xi, yi, xj, yj] = [points[i], points[i + 1], points[j], points[j + 1]];
+    if (yi > p.y !== yj > p.y && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// Rough width of bold sans-serif text, enough to keep labels apart.
+export function labelWidth(text, size) {
+  return Math.ceil(String(text).length * size * 0.62) + 4;
+}
+
+const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+/**
+ * Where to put a label of size box ({w,h}) inside a polygon: the spot nearest the middle whose label
+ * covers none of the taken rectangles ({x,y,w,h}). Falls back to the middle.
+ */
+export function labelSpot(points, box, taken, steps = 12) {
+  const mid = centroid(points);
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < points.length; i += 2) {
+    minX = Math.min(minX, points[i]);
+    maxX = Math.max(maxX, points[i]);
+    minY = Math.min(minY, points[i + 1]);
+    maxY = Math.max(maxY, points[i + 1]);
+  }
+  const spots = [mid];
+  for (let a = 0; a <= steps; a++) {
+    for (let b = 0; b <= steps; b++) spots.push({ x: minX + ((maxX - minX) * a) / steps, y: minY + ((maxY - minY) * b) / steps });
+  }
+  const dist = (p) => Math.hypot(p.x - mid.x, p.y - mid.y);
+  spots.sort((p, q) => dist(p) - dist(q));
+  for (const s of spots) {
+    if (!pointInPolygon(points, s)) continue;
+    const rect = { x: s.x - box.w / 2, y: s.y - box.h / 2, w: box.w, h: box.h };
+    if (!taken.some((t) => overlaps(rect, t))) return s;
+  }
+  return mid;
 }
 
 export function shortName(name, max = 10) {

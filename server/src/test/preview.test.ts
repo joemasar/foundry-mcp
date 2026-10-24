@@ -90,3 +90,18 @@ test("regions are drawn as tinted outlines with their names, dashed when players
   assert.ok(kinds.indexOf("poly") < kinds.indexOf("line", kinds.indexOf("poly")));
   assert.equal(p.previewOps({ rect, gridSize: 100, regions }, { regions: false, grid: false }, 1000).ops.length, 0);
 });
+
+test("a region's name keeps clear of tokens standing in it", () => {
+  // A 4x4 square region with a token on its middle squares.
+  const regions = [{ name: "Test aura", color: "#ff0", polygons: [[200, 100, 600, 100, 600, 500, 200, 500]] }];
+  const tokens = [{ x: 300, y: 200, w: 200, h: 200, name: "Kyra", disposition: 1 }];
+  const plan = p.previewOps({ rect, gridSize: 100, regions, tokens }, { grid: false }, 1000);
+  const label = plan.ops.find((o: any) => o.op === "text" && o.text === "Test aura");
+  const box = { x: label.x - p.labelWidth("Test aura", 11) / 2, y: label.y - 7, w: p.labelWidth("Test aura", 11), h: 14 };
+  const tok = { x: 50, y: 50, w: 100, h: 100 };
+  const overlap = box.x < tok.x + tok.w && tok.x < box.x + box.w && box.y < tok.y + tok.h && tok.y < box.y + box.h;
+  assert.equal(overlap, false);
+  assert.ok(p.pointInPolygon([0, 0, 200, 0, 200, 200, 0, 200], label), "still inside the region");
+  // With nowhere free, it falls back to the middle.
+  assert.deepEqual(p.labelSpot([0, 0, 10, 0, 10, 10, 0, 10], { w: 50, h: 14 }, [{ x: -100, y: -100, w: 300, h: 300 }]), { x: 5, y: 5 });
+});

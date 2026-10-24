@@ -1408,7 +1408,23 @@ export const handlers = {
       updates.push({ _id: t.id, x: c.x(m.x), y: c.y(m.y) });
     }
     const done = await scene.updateEmbeddedDocuments("Token", updates);
-    return { scene: scene.name, moved: done.map((t) => ({ name: t.name, ...toGrid(scene, t.x, t.y) })) };
+    // In v14 a move plays out step by step and the update returns at the start, so wait for it to
+    // finish (a Region can still teleport the token right after), then report where it ended up.
+    const finished = done.map((t) => t.movement?.finished).filter(Boolean);
+    if (finished.length) {
+      await Promise.race([Promise.allSettled(finished), new Promise((r) => setTimeout(r, 10_000))]);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return {
+      scene: scene.name,
+      moved: done.map((t, i) => {
+        const doc = scene.tokens.get(t.id) ?? t;
+        const at = toGrid(scene, doc.x, doc.y);
+        const to = { x: moves[i].x, y: moves[i].y };
+        const arrived = Math.abs(at.x - to.x) < 0.01 && Math.abs(at.y - to.y) < 0.01;
+        return { name: doc.name, ...at, to: arrived ? undefined : to, note: arrived ? undefined : "ended somewhere else (stopped, still moving, or moved by a Region)" };
+      }),
+    };
   },
 
   async "tokens.state"({ sceneUuid, tokens, action, name }) {

@@ -69,10 +69,11 @@ Released as v0.5.0. Live-tested on dev (2026-10-24) on a test scene with two PC 
 
 Nothing planned after item 10. Then the production install (see Housekeeping).
 
-Small fixes found in the v0.5.0 live test:
-- `move_tokens` returns before v14's move animation ends, so it reports the tokens' old squares (the move does happen). Return the target squares, or wait for the move
-- `preview_scene` can put a Region's name on top of a token's name
-- Check that the trap's chat card shows PF2e's save and damage buttons (the message stores `@Check` / `@Damage` text that PF2e turns into buttons when it shows the card)
+**v0.5.1** fixes two things the v0.5.0 live test found:
+- `move_tokens` reported the tokens' old squares: in v14 a move plays out step by step and the update returns at the start. It now waits for each move to finish (up to 10 seconds) and reports where each token ended up, so a teleport or a stopped move shows
+- `preview_scene` could put a Region's name on top of a token's name. Region names now go at the free spot inside the Region nearest its middle
+
+Still to check: the trap's chat card shows PF2e's save and damage buttons (the message stores `@Check` / `@Damage` text that PF2e turns into buttons when it shows the card).
 
 ## Housekeeping
 

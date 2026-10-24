@@ -788,7 +788,8 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
     "move_tokens",
     {
       title: "Move tokens",
-      description: "Move tokens to grid squares (column, row from the top-left). Moves ignore walls, so check the map makes sense.",
+      description:
+        "Move tokens to grid squares (column, row from the top-left). Moves ignore walls, so check the map makes sense. Waits for each move to finish and returns where each token ended up; a Region such as a teleporter can move it on.",
       inputSchema: {
         sceneUuid: sceneRef,
         moves: z.array(z.object({ token: z.string().describe("Exact token name or ID"), x: z.number(), y: z.number() })).min(1),
