@@ -51,9 +51,9 @@ Released as v0.4.0. Live-tested on dev (2026-10-23): XP award and undo, treasure
 - `create_map_scene`: an image (local file, URL, base64 or a Foundry path), for example from the Claude app's image tools, becomes a scene sized to the grid asked for (`columns`, `rows`, or the art's own `pixelsPerSquare`; otherwise 25 squares on the long side). Rooms and doors become walls and doors, with no floors drawn over the art. Then `preview_scene` to check it lines up
 - `upload_asset` now works out a missing file extension from the image bytes
 
-## Built, not yet released: v0.5 (item 10)
+## Done: v0.5 (item 10)
 
-On branch `feature/spell-areas-regions`. Needs a module release (0.5.0) and a live test on dev.
+Released as v0.5.0. Live-tested on dev (2026-10-24) on a test scene with two PC tokens: a cone and a line from a token, a burst on a grid corner (12 squares, as PF2e counts a 10-foot burst), an emanation that follows its token, difficult terrain, a pit trap and a two-way portal, all drawn by `preview_scene` and listed by `session_log`. Walking a PC into the trap whispered the GM its card (Reflex DC 18, 2d6 bludgeoning) and switched the trap off; walking a PC onto the portal moved it to the arrival area, aura and all. Cleanup deleted the trap macro and its folder, but kept the test scene because it had become the active scene (cause unclear; Foundry's teleport doesn't activate scenes). After making River Crossing active again, a second cleanup deleted the scene and everything on it.
 
 ### Spell areas and Regions (Tier 3, item 10)
 - Foundry v14 has no measured templates: they became Regions. Spell areas are Regions shaped the way PF2e places them (burst = circle, 90° cone, line one square wide, emanation around the token), flagged with PF2e's `areaShape`
@@ -68,6 +68,11 @@ On branch `feature/spell-areas-regions`. Needs a module release (0.5.0) and a li
 ## Next
 
 Nothing planned after item 10. Then the production install (see Housekeeping).
+
+Small fixes found in the v0.5.0 live test:
+- `move_tokens` returns before v14's move animation ends, so it reports the tokens' old squares (the move does happen). Return the target squares, or wait for the move
+- `preview_scene` can put a Region's name on top of a token's name
+- Check that the trap's chat card shows PF2e's save and damage buttons (the message stores `@Check` / `@Damage` text that PF2e turns into buttons when it shows the card)
 
 ## Housekeeping
 
