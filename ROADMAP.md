@@ -79,6 +79,8 @@ Still to check: the trap's chat card shows PF2e's save and damage buttons (the m
 
 **v0.5.4** fixes token art on worlds with a PF2e token-art module (production has `pf2e-tokens-npc-core`): when `import_from_compendium` or `update_document` gave a token or an actor's token a new picture, the dynamic token ring kept the module's stock portrait at 2x, so the token didn't match the sheet. The ring now follows the new picture at scale 1, unless the changes set the ring themselves. Live-checked on production (2026-10-29): an import with a new picture and an `update_document` on a plain import both put the ring on the new art; the test actors were cleaned up.
 
+The module also zooms the token picture 2x (1.6x for Small) with PF2e's automatic sizing off, so swapped-in art still drew too big. **v0.5.5** reset the scale too, but stored 0.8 for Small creatures, and PF2e keeps automatic sizing on only while the stored scale is 1 (it draws Small at 0.8 itself), so imported Small creatures lost automatic sizing. **v0.5.6** stores scale 1 with automatic sizing on, unless the changes set a scale. Live-checked on production (2026-10-29): a Small Goblin Chef imported with new art, and another given new art with `update_document`, both store scale 1 with automatic sizing on and draw at 0.8, also after a simulated reload; the test actors were cleaned up.
+
 ## Housekeeping
 
 - **Untagged older content:** things Claude made before v0.3.0 aren't tagged, so `session_log` and `cleanup_session` can't find them. Clean those up by hand.
