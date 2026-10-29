@@ -50,6 +50,21 @@ function embedTagged(parent, type, list) {
 
 // ---------- helpers ----------
 
+// When changes give a token a new picture, its dynamic token ring can still show another one (PF2e
+// token-art modules set the ring's own subject picture, zoomed 2x). Point the ring at the new picture
+// too, at normal size, unless the changes set the ring themselves. `prefix` is "prototypeToken." for
+// actor data and "" for a token. Returns the changes as they were, or flattened with the ring added.
+function matchRingArt(changes, current, prefix) {
+  const flat = foundry.utils.flattenObject(foundry.utils.expandObject(changes ?? {}));
+  const src = flat[`${prefix}texture.src`];
+  if (!src || `${prefix}ring.subject.texture` in flat) return changes;
+  const subject = foundry.utils.getProperty(current, `${prefix}ring.subject.texture`);
+  if (!subject || subject === src) return changes;
+  flat[`${prefix}ring.subject.texture`] = src;
+  if (!(`${prefix}ring.subject.scale` in flat)) flat[`${prefix}ring.subject.scale`] = 1;
+  return flat;
+}
+
 function requirePf2e() {
   if (game.system.id !== "pf2e") throw new Error(`This tool is for Pathfinder 2e, but this world uses "${game.system.id}".`);
 }
@@ -810,7 +825,10 @@ export const handlers = {
     if (!collection) throw new Error(`Cannot import a ${src.documentName} on its own.`);
     let data = collection.fromCompendium(src);
     if (name) data.name = name;
-    if (changes) data = foundry.utils.mergeObject(data, foundry.utils.expandObject(changes));
+    if (changes) {
+      const ringed = src.documentName === "Actor" ? matchRingArt(changes, data, "prototypeToken.") : changes;
+      data = foundry.utils.mergeObject(data, foundry.utils.expandObject(ringed));
+    }
     if (name && src.documentName === "Actor") foundry.utils.setProperty(data, "prototypeToken.name", name);
     const folderId = await getFolderId(folder, src.documentName);
     if (folderId) data.folder = folderId;
@@ -1373,7 +1391,8 @@ export const handlers = {
   async update({ uuid, changes }) {
     const doc = await getDoc(uuid);
     if (doc.pack) throw new Error("That document is in a compendium. Import it first, then update the world copy.");
-    await doc.update(changes);
+    const prefix = { Actor: "prototypeToken.", Token: "" }[doc.documentName];
+    await doc.update(prefix === undefined ? changes : matchRingArt(changes, doc._source, prefix));
     return summarize(doc);
   },
 
