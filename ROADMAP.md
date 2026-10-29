@@ -77,6 +77,8 @@ Live-checked on dev (2026-10-24): labels stay clear of tokens and short moves re
 
 Still to check: the trap's chat card shows PF2e's save and damage buttons (the message stores `@Check` / `@Damage` text that PF2e turns into buttons when it shows the card).
 
+**v0.5.4** fixes token art on worlds with a PF2e token-art module (production has `pf2e-tokens-npc-core`): when `import_from_compendium` or `update_document` gave a token or an actor's token a new picture, the dynamic token ring kept the module's stock portrait at 2x, so the token didn't match the sheet. The ring now follows the new picture at scale 1, unless the changes set the ring themselves. Live-checked on production (2026-10-29): an import with a new picture and an `update_document` on a plain import both put the ring on the new art; the test actors were cleaned up.
+
 ## Housekeeping
 
 - **Untagged older content:** things Claude made before v0.3.0 aren't tagged, so `session_log` and `cleanup_session` can't find them. Clean those up by hand.
