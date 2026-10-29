@@ -51,17 +51,28 @@ function embedTagged(parent, type, list) {
 // ---------- helpers ----------
 
 // When changes give a token a new picture, its dynamic token ring can still show another one (PF2e
-// token-art modules set the ring's own subject picture, zoomed 2x). Point the ring at the new picture
-// too, at normal size, unless the changes set the ring themselves. `prefix` is "prototypeToken." for
-// actor data and "" for a token. Returns the changes as they were, or flattened with the ring added.
-function matchRingArt(changes, current, prefix) {
+// token-art modules set the ring's own subject picture, zoomed 2x, and zoom the token picture 2x with
+// PF2e's automatic sizing off). Point the ring at the new picture at normal size, draw the token at
+// the usual size for the creature (0.8 Small, 0.6 Tiny, else 1) and, in PF2e, turn automatic sizing
+// back on; anything the changes set themselves is left alone. `prefix` is "prototypeToken." for actor
+// data and "" for a token; `size` is the creature's size slug, if known. Returns the changes as they
+// were, or flattened with the fixes added.
+function matchRingArt(changes, current, prefix, size) {
   const flat = foundry.utils.flattenObject(foundry.utils.expandObject(changes ?? {}));
   const src = flat[`${prefix}texture.src`];
   if (!src || `${prefix}ring.subject.texture` in flat) return changes;
   const subject = foundry.utils.getProperty(current, `${prefix}ring.subject.texture`);
   if (!subject || subject === src) return changes;
-  flat[`${prefix}ring.subject.texture`] = src;
-  if (!(`${prefix}ring.subject.scale` in flat)) flat[`${prefix}ring.subject.scale`] = 1;
+  const scale = { tiny: 0.6, sm: 0.8 }[size] ?? 1;
+  const ownScale = `${prefix}texture.scaleX` in flat || `${prefix}texture.scaleY` in flat;
+  const fixes = {
+    "ring.subject.texture": src,
+    "ring.subject.scale": 1,
+    // A scale set in the changes wins, and automatic sizing stays off so PF2e doesn't undo it.
+    ...(ownScale ? {} : { "texture.scaleX": scale, "texture.scaleY": scale }),
+    ...(game.system.id === "pf2e" && !ownScale ? { "flags.pf2e.autoscale": true } : {}),
+  };
+  for (const [k, v] of Object.entries(fixes)) if (!(`${prefix}${k}` in flat)) flat[`${prefix}${k}`] = v;
   return flat;
 }
 
@@ -826,7 +837,10 @@ export const handlers = {
     let data = collection.fromCompendium(src);
     if (name) data.name = name;
     if (changes) {
-      const ringed = src.documentName === "Actor" ? matchRingArt(changes, data, "prototypeToken.") : changes;
+      const ringed =
+        src.documentName === "Actor"
+          ? matchRingArt(changes, data, "prototypeToken.", foundry.utils.getProperty(data, "system.traits.size.value"))
+          : changes;
       data = foundry.utils.mergeObject(data, foundry.utils.expandObject(ringed));
     }
     if (name && src.documentName === "Actor") foundry.utils.setProperty(data, "prototypeToken.name", name);
@@ -1392,7 +1406,9 @@ export const handlers = {
     const doc = await getDoc(uuid);
     if (doc.pack) throw new Error("That document is in a compendium. Import it first, then update the world copy.");
     const prefix = { Actor: "prototypeToken.", Token: "" }[doc.documentName];
-    await doc.update(prefix === undefined ? changes : matchRingArt(changes, doc._source, prefix));
+    const actor = doc.documentName === "Actor" ? doc : doc.actor;
+    const size = actor?.system?.traits?.size?.value;
+    await doc.update(prefix === undefined ? changes : matchRingArt(changes, doc._source, prefix, size));
     return summarize(doc);
   },
 
