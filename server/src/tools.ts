@@ -1302,7 +1302,7 @@ export function registerTools(server: McpServer, bridge: FoundryBridge, tokenInf
         sceneUuid: sceneRef,
         name: z.string(),
         shapes: z.array(regionShape).min(1),
-        visible: z.boolean().default(false).describe("Let players see the region. Hidden regions still work."),
+        visible: z.boolean().default(false).describe("Let players see the region. Hidden regions still work, and the GM sees them only with the Regions layer open."),
         color: z.string().optional().describe("CSS colour. Defaults by kind: red trap, brown terrain, purple teleporter."),
         difficultTerrain: z
           .object({

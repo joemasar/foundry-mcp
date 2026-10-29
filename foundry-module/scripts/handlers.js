@@ -1841,7 +1841,9 @@ export const handlers = {
   async "scene.createRegion"({ sceneUuid, name, shapes, color, visible = false, difficultTerrain, teleport, trap }) {
     const scene = await resolveScene(sceneUuid);
     const shapeData = regionShapes(shapes, sceneFrame(scene));
-    const visibility = visible ? CONST.REGION_VISIBILITY.ALWAYS : CONST.REGION_VISIBILITY.GAMEMASTER;
+    // Hidden regions use LAYER, so the GM only sees them with the Regions layer open
+    // and they don't cover the map art during play.
+    const visibility = visible ? CONST.REGION_VISIBILITY.ALWAYS : CONST.REGION_VISIBILITY.LAYER;
     const regionId = foundry.utils.randomID();
     const behaviors = [];
     const out = {};
